@@ -8,11 +8,14 @@ One asyncio.Task per agent. Manages the turn loop:
   5. On BackendError: retry once if retryable, else emit error + set failed
   6. Turn timeout: interrupt + emit error event
   7. Hibernate: after idle_hibernate_s, emit state_change(waiting)
+  8. Budget enforcement: after each TurnEnd, BudgetEnforcer.record_turn_cost()
+     is called; PAUSE result → status=paused_budget, wait for resume()
 
 Public API:
-    AgentSession(agent_id, backend, event_service, db, ...)
+    AgentSession(agent_id, scope, backend, event_service, inbox, db, budget, ...)
     AgentSession.run()       — start the main loop (called as asyncio.Task)
     AgentSession.interrupt() — interrupt current turn gracefully
+    AgentSession.resume()    — resume after a budget approval is granted
     AgentSession.status      — current AgentStatus
 """
 
@@ -31,6 +34,7 @@ from fleet.agents.backends.protocol import (
     ToolUseEvent,
     TurnEnd,
 )
+from fleet.agents.budget import BudgetAction, BudgetEnforcer
 from fleet.agents.inbox import InboxService
 from fleet.db import DatabaseManager
 from fleet.events.service import EventService
@@ -43,11 +47,12 @@ class AgentSession:
     def __init__(
         self,
         agent_id: str,
+        scope: str,
         backend: AgentBackend,
         event_service: EventService,
-        db: DatabaseManager,
         inbox: InboxService,
-        scope: str,
+        db: DatabaseManager,
+        budget: BudgetEnforcer,
         *,
         turn_timeout_s: float = 300.0,
         idle_hibernate_s: float = 3600.0,
@@ -64,7 +69,10 @@ class AgentSession:
         self._status: AgentStatus = "idle"
         self._session_ref: str | None = None
         self._interrupt_event = asyncio.Event()
+        self._resume_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+
+        self._budget = budget
 
     @property
     def status(self) -> AgentStatus:
@@ -77,8 +85,18 @@ class AgentSession:
     async def interrupt(self) -> None:
         """Signal an interrupt to the current turn."""
         self._interrupt_event.set()
+        self._resume_event.set()  # unblock _wait_for_resume if paused_budget
         if self._session_ref is not None:
             await self._backend.interrupt(self._session_ref)
+
+    async def resume(self) -> None:
+        """Resume the session after a budget approval is granted."""
+        self._resume_event.set()
+
+    async def _wait_for_resume(self) -> None:
+        """Block until resume() is called (budget approval received)."""
+        self._resume_event.clear()
+        await self._resume_event.wait()
 
     # ------------------------------------------------------------------
     # DB helpers
@@ -274,6 +292,17 @@ class AgentSession:
                     },
                 )
                 await self._inbox.mark_delivered(inbox_id)
+
+                # Budget enforcement: check limits after accumulating this turn's cost.
+                budget_action = await self._budget.record_turn_cost(event)
+                if budget_action == BudgetAction.PAUSE:
+                    # Hard budget exceeded — pause until an approval is granted.
+                    await self._set_status("paused_budget")
+                    await self._wait_for_resume()
+                    if self._interrupt_event.is_set():
+                        await self._set_status("idle")
+                        return "interrupted"
+
                 await self._set_status("idle")
                 return "done"
 

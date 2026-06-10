@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Connection, text
 
 from fleet.agents.backends.protocol import AgentBackend
+from fleet.agents.budget import BudgetEnforcer
 from fleet.agents.inbox import InboxService
 from fleet.agents.session import AgentSession
 from fleet.db import DatabaseManager
@@ -222,13 +223,20 @@ class AgentService:
         self, agent_id: str, scope: str, backend: AgentBackend
     ) -> None:
         """Create an AgentSession and launch it as an asyncio.Task."""
+        budget = BudgetEnforcer(
+            agent_id=agent_id,
+            scope=scope,
+            db=self._db,
+            event_service=self._event_service,
+        )
         session = AgentSession(
             agent_id=agent_id,
+            scope=scope,
             backend=backend,
             event_service=self._event_service,
-            db=self._db,
             inbox=self._inbox,
-            scope=scope,
+            db=self._db,
+            budget=budget,
         )
         task = asyncio.create_task(session.run(), name=f"session:{agent_id}")
         session._task = task
