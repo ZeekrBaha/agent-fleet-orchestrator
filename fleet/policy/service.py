@@ -33,8 +33,11 @@ class PolicyService:
         """Raise PolicyDenied if role is unknown or tool is not in role's allowlist.
 
         ADR-005: unknown role OR unknown tool → always deny, never silently allow.
+        Role is normalised to lowercase before lookup so "Orchestrator" is
+        treated as "orchestrator".
         """
-        role_cfg = self._manifest.roles.get(role)
+        role_normalized = role.strip().lower()
+        role_cfg = self._manifest.roles.get(role_normalized)
         if role_cfg is None:
             reason = f"Unknown role {role!r} — access denied (fail-closed)"
             logger.warning(
@@ -58,6 +61,8 @@ class PolicyService:
         """
         normalised = path.replace("\\", "/").lower()
 
+        # fnmatch compiles ** via re.DOTALL so ** matches path separators —
+        # fnmatch("a/b/c", "**/b/**") works correctly unlike plain glob().
         for pattern in self._manifest.secret_paths:
             # Strip the leading **/ prefix so bare filenames also match;
             # e.g. "**/.env" should match ".env" at any depth.
@@ -128,8 +133,12 @@ class PolicyService:
             raise PolicyDenied(reason=reason, tool_name="spawn_worker", role=role)
 
     def get_role_config(self, role: str) -> RoleConfig:
-        """Return role config. Raise PolicyDenied if role unknown (fail-closed)."""
-        cfg = self._manifest.roles.get(role)
+        """Return role config. Raise PolicyDenied if role unknown (fail-closed).
+
+        Role is normalised to lowercase before lookup.
+        """
+        role_normalized = role.strip().lower()
+        cfg = self._manifest.roles.get(role_normalized)
         if cfg is None:
             reason = f"Unknown role {role!r} — access denied (fail-closed)"
             logger.warning("policy_denied get_role_config role=%r", role)

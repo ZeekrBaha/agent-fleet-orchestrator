@@ -10,6 +10,7 @@ Test groups:
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,40 @@ from fleet.api.auth import require_token
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService
 from fleet.events.sse import SSEHub
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_PERMISSIVE_MANIFEST_PATH = os.path.join(
+    os.path.dirname(__file__), "manifests", "permissive.yaml"
+)
+
+_DEFAULT_MANIFEST_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "fleet", "manifests", "default.yaml"
+)
+
+
+def _make_permissive_policy() -> Any:
+    """Return a PolicyService loaded from the permissive test manifest."""
+    from fleet.policy.rules import load_manifest
+    from fleet.policy.service import PolicyService
+
+    return PolicyService(load_manifest(_PERMISSIVE_MANIFEST_PATH))
+
+
+def _make_test_role_agent_svc() -> Any:
+    """Return a mock AgentService whose get_agent() always returns a test_role agent
+    and whose list_agents() always returns an empty list (for spawn rate checks)."""
+    mock_agent = MagicMock()
+    mock_agent.role = "test_role"
+    mock_agent.status = "idle"
+
+    mock_agent_svc = AsyncMock()
+    mock_agent_svc.get_agent.return_value = mock_agent
+    mock_agent_svc.list_agents.return_value = []
+    return mock_agent_svc
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -48,16 +83,21 @@ async def event_service(db: DatabaseManager) -> EventService:
 
 
 def _build_tools_app(db: DatabaseManager, event_service: EventService) -> FastAPI:
-    """Build a minimal FastAPI app wired with the tools router."""
-    from fleet.api.tools import router, set_tool_services
+    """Build a minimal FastAPI app wired with the tools router.
+
+    Uses a permissive test manifest (test_role has all tools) so that
+    non-policy tests can call any tool without worrying about ACL.
+    """
+    from fleet.api.tools import router, set_policy_service, set_tool_services
 
     set_tool_services(
-        agent_svc=None,   # injected per test via mock
+        agent_svc=_make_test_role_agent_svc(),
         event_svc=event_service,
         workspace_svc=None,
         worktree_svc=None,
         db=db,
     )
+    set_policy_service(_make_permissive_policy())
 
     app = FastAPI()
     app.include_router(router)
@@ -147,7 +187,7 @@ async def test_spawn_worker_calls_agent_service(
     event_service: EventService,
 ) -> None:
     """POST /api/tools/spawn_worker delegates to AgentService.create_agent()."""
-    from fleet.api.tools import router, set_tool_services
+    from fleet.api.tools import router, set_policy_service, set_tool_services
 
     mock_record = MagicMock()
     mock_record.id = "new-agent-id"
@@ -155,8 +195,14 @@ async def test_spawn_worker_calls_agent_service(
     mock_record.scope = "scope-1"
     mock_record.status = "idle"
 
+    # Calling agent is orchestrator so policy allows spawn_worker.
+    calling_agent = MagicMock()
+    calling_agent.role = "orchestrator"
+
     mock_agent_svc = AsyncMock()
     mock_agent_svc.create_agent.return_value = mock_record
+    mock_agent_svc.get_agent.return_value = calling_agent
+    mock_agent_svc.list_agents.return_value = []  # for spawn rate check
 
     set_tool_services(
         agent_svc=mock_agent_svc,
@@ -165,6 +211,12 @@ async def test_spawn_worker_calls_agent_service(
         worktree_svc=None,
         db=db,
     )
+    from fleet.policy.rules import load_manifest
+    from fleet.policy.service import PolicyService
+
+    policy_svc = PolicyService(load_manifest(_DEFAULT_MANIFEST_PATH))
+    set_policy_service(policy_svc)
+
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_token] = _no_auth
@@ -374,17 +426,26 @@ async def test_tool_error_emits_tool_result_error_event(
     """When a tool handler raises, a tool_result_error event is emitted."""
     from sqlalchemy import text
 
-    from fleet.api.tools import router, set_tool_services
+    from fleet.api.tools import router, set_policy_service, set_tool_services
 
     # Inject a worktree_svc that raises ValueError to trigger the error path.
     mock_worktree_svc = AsyncMock()
     mock_worktree_svc.get_wip_report.side_effect = ValueError("worktree gone")
 
-    # worker_wip requires agent_svc.get_agent to return something with worktree_id set.
-    mock_agent = MagicMock()
-    mock_agent.worktree_id = "wt-99"
+    # get_agent("agent-1") → calling agent with coder role (has worker_wip).
+    # get_agent("agent-99") → target agent with worktree_id set.
+    mock_calling_agent = MagicMock()
+    mock_calling_agent.role = "coder"
+    mock_target_agent = MagicMock()
+    mock_target_agent.worktree_id = "wt-99"
+
+    async def _get_agent(agent_id: str) -> Any:
+        if agent_id == "agent-1":
+            return mock_calling_agent
+        return mock_target_agent
+
     mock_agent_svc = AsyncMock()
-    mock_agent_svc.get_agent.return_value = mock_agent
+    mock_agent_svc.get_agent.side_effect = _get_agent
 
     set_tool_services(
         agent_svc=mock_agent_svc,
@@ -393,6 +454,12 @@ async def test_tool_error_emits_tool_result_error_event(
         worktree_svc=mock_worktree_svc,
         db=db,
     )
+    from fleet.policy.rules import load_manifest
+    from fleet.policy.service import PolicyService
+
+    policy_svc = PolicyService(load_manifest(_DEFAULT_MANIFEST_PATH))
+    set_policy_service(policy_svc)
+
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_token] = _no_auth
@@ -437,7 +504,11 @@ async def test_check_conflict_returns_has_conflict(
 
     from sqlalchemy import text
 
-    from fleet.api.tools import router, set_tool_services
+    from fleet.agents.inbox import InboxService
+    from fleet.agents.service import AgentService
+    from fleet.api.tools import router, set_policy_service, set_tool_services
+    from fleet.policy.rules import load_manifest
+    from fleet.policy.service import PolicyService
     from tests.fixtures.gitrepo import GitRepoFactory
 
     # Create a repo with conflict potential (main and feature both modify file.txt).
@@ -488,13 +559,21 @@ async def test_check_conflict_returns_has_conflict(
 
     await db.write(_seed)
 
+    # Use a real AgentService so get_agent(agent_id) returns the seeded coder agent.
+    inbox_svc = InboxService(db)
+    agent_svc = AgentService(db, event_service, inbox_svc)
+
     set_tool_services(
-        agent_svc=None,
+        agent_svc=agent_svc,
         event_svc=event_service,
         workspace_svc=None,
         worktree_svc=None,
         db=db,
     )
+    # coder has check_conflict in its allowed_tools
+    policy_svc = PolicyService(load_manifest(_DEFAULT_MANIFEST_PATH))
+    set_policy_service(policy_svc)
+
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[require_token] = _no_auth

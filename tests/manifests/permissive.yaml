@@ -1,0 +1,23 @@
+version: "1"
+
+# Permissive manifest used only in tests that are not testing policy enforcement.
+# All tool-endpoint integration tests that focus on other behaviour (DB writes,
+# audit events, error paths) inject a test_role agent so policy passes through.
+roles:
+  test_role:
+    allowed_tools:
+      - spawn_worker
+      - send_message
+      - list_agents
+      - get_agent_logs
+      - stop_agent
+      - worker_wip
+      - check_conflict
+      - record_validation
+      - report_issue
+      - update_progress
+      - request_approval
+      - memory_write
+    spawn_rate:
+      max_live_workers: 100
+      max_spawns_per_minute: 100

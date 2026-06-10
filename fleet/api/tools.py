@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -42,6 +42,7 @@ from fleet.api.tool_schemas import (
     UpdateProgressInput,
     WorkerWipInput,
 )
+from fleet.policy.service import PolicyDenied
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -64,8 +65,8 @@ def set_tool_services(
 ) -> None:
     """Wire service instances into this module (called at application startup).
 
-    Also resets the policy service to None so tests that don't call
-    set_policy_service() run without policy enforcement.
+    Resets the policy service to None — callers MUST call set_policy_service()
+    after this, otherwise all tool calls will be rejected with 503.
     """
     global _services, _policy_svc
     _services = {
@@ -94,10 +95,9 @@ def set_policy_service(policy_svc: Any) -> None:
 
 
 def get_policy_service() -> Any:
-    """Return the injected PolicyService; returns None if not configured.
+    """Return the injected PolicyService.
 
-    None means no policy enforcement (backwards-compat for tests that
-    do not call set_policy_service).
+    Returns None when not configured — callers must check and raise 503.
     """
     return _policy_svc
 
@@ -190,6 +190,36 @@ async def _handle_spawn_worker(
     from fleet.agents.backends.mock import MockBackend
 
     agent_svc = svcs["agent_svc"]
+    event_svc = svcs["event_svc"]
+    policy_svc = svcs["_policy_svc"]
+    calling_agent = svcs["_calling_agent"]
+
+    # Count live workers in this scope (for spawn rate check)
+    live_workers = await agent_svc.list_agents(scope=inp.scope)
+    live_count = sum(
+        1 for a in live_workers if a.status not in ("archived", "failed")
+    )
+
+    # Count spawns in last 60 seconds from state_change events with action=spawn
+    recent_events = await event_svc.query(
+        inp.scope, type_filter="state_change", limit=500
+    )
+    cutoff = (
+        datetime.now(UTC) - timedelta(minutes=1)
+    ).isoformat().replace("+00:00", "Z")
+    spawns_last_minute = sum(
+        1
+        for e in recent_events
+        if e.ts >= cutoff and e.payload.get("action") == "spawn"
+    )
+
+    policy_svc.check_spawn_rate(
+        scope=inp.scope,
+        role=calling_agent.role,
+        current_live_workers=live_count,
+        spawns_last_minute=spawns_last_minute,
+    )
+
     record = await agent_svc.create_agent(
         scope=inp.scope,
         name=inp.name,
@@ -482,38 +512,62 @@ async def dispatch_tool(
     )
 
     # --- Policy check (ADR-005: fail-closed) ---------------------------------
+    # No policy service → 503; every tool call must pass policy enforcement.
     policy_svc = get_policy_service()
-    if policy_svc is not None:
-        # Look up the calling agent's role from the DB/service.
-        agent_svc = svcs.get("agent_svc")
-        calling_role: str = "unknown"
-        if agent_svc is not None and agent_id:
-            calling_agent = await agent_svc.get_agent(agent_id)
-            if calling_agent is not None:
-                calling_role = calling_agent.role
+    if policy_svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Policy service not configured",
+        )
 
-        from fleet.policy.service import PolicyDenied
-
-        try:
-            policy_svc.check_tool_allowed(role=calling_role, tool_name=tool_name)
-        except PolicyDenied as exc:
-            await _emit_tool_error(event_svc, scope, agent_id, tool_name, exc.reason)
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "type": "policy_denied",
-                    "title": "Tool access denied",
-                    "detail": exc.reason,
-                    "status": 403,
-                },
-            ) from exc
-    # -------------------------------------------------------------------------
+    # Look up the calling agent's role from the DB/service.
+    agent_svc = svcs.get("agent_svc")
+    calling_role: str = "unknown"
+    calling_agent: Any = None
+    if agent_svc is not None and agent_id:
+        calling_agent = await agent_svc.get_agent(agent_id)
+        if calling_agent is not None:
+            calling_role = calling_agent.role
 
     try:
-        result = await handler(validated, svcs)
+        policy_svc.check_tool_allowed(role=calling_role, tool_name=tool_name)
+    except PolicyDenied as exc:
+        await _emit_tool_error(event_svc, scope, agent_id, tool_name, exc.reason)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "type": "policy_denied",
+                "title": "Tool access denied",
+                "detail": exc.reason,
+                "status": 403,
+            },
+        ) from exc
+    # -------------------------------------------------------------------------
+
+    # Pass policy context to handlers that need it (spawn_worker rate-limiting).
+    svcs_with_ctx = {
+        **svcs,
+        "_policy_svc": policy_svc,
+        "_calling_agent": calling_agent,
+    }
+
+    try:
+        result = await handler(validated, svcs_with_ctx)
     except HTTPException:
         # Re-raise HTTP exceptions from handlers unchanged
         raise
+    except PolicyDenied as exc:
+        # Spawn rate exceeded → 429 Too Many Requests (RFC 7807 body)
+        await _emit_tool_error(event_svc, scope, agent_id, tool_name, exc.reason)
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "type": "spawn_rate_exceeded",
+                "title": "Spawn rate limit exceeded",
+                "detail": exc.reason,
+                "status": 429,
+            },
+        ) from exc
     except Exception as exc:
         # Map unexpected errors to audit event + 500
         # Typed: ValueError → 400, everything else → 500
