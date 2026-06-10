@@ -119,18 +119,18 @@ class DatabaseManager:
 
     async def _writer(self) -> None:
         """Background task: serialise all DB writes."""
+        # Defined once here to avoid re-allocating the function on every loop
+        # iteration.
+        def _run(eng: Engine, op: Callable[[Connection], Any]) -> Any:
+            with eng.connect() as conn:
+                return op(conn)
+
         while True:
             item = await self._queue.get()
 
             if isinstance(item, _StopItem):
                 self._queue.task_done()
                 break
-
-            # Run the synchronous DB operation in a thread pool so the event
-            # loop is not blocked during I/O.
-            def _run(eng: Engine, op: Callable[[Connection], Any]) -> Any:
-                with eng.connect() as conn:
-                    return op(conn)
 
             try:
                 result = await asyncio.to_thread(_run, self._engine, item.operation)
@@ -170,21 +170,26 @@ class DatabaseManager:
             yield conn
 
     async def close(self) -> None:
-        """Drain the write queue, stop the writer task, and close the engine."""
-        # Yield to the event loop so that any concurrently-created tasks that
-        # have not yet called write() (i.e. have not yet enqueued their items)
-        # get a chance to run first.  A single yield is sufficient because
-        # create_task() schedules tasks to run in the next event-loop iteration.
-        await asyncio.sleep(0)
+        """Drain the write queue, stop the writer task, and close the engine.
+
+        Callers must ``await`` any outstanding write coroutines before calling
+        ``close()``.  This method does not attempt to yield to let un-awaited
+        writes enqueue themselves first — that heuristic is unreliable for
+        tasks that do more than one ``await`` before reaching ``write()``.
+        """
+        # Guard: if _start_writer() was never called there is no task to drain.
+        # Attempting queue.join() without a consumer would deadlock.
+        if self._writer_task is None:
+            self._engine.dispose()
+            return
         # Enqueue the stop sentinel — the writer will exit after processing all
         # items ahead of it.
         await self._queue.put(_StopItem())
         # Block until every queued item (including the stop sentinel) is done.
         await self._queue.join()
-        if self._writer_task is not None:
-            await self._writer_task
+        await self._writer_task
         # One final yield so that tasks whose futures were just resolved by the
-        # writer can proceed past their `await future` and mark themselves done.
+        # writer can proceed past their ``await future`` and mark themselves done.
         await asyncio.sleep(0)
         self._engine.dispose()
 

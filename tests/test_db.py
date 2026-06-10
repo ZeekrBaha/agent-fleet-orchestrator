@@ -115,20 +115,50 @@ async def test_read_does_not_block_concurrent_reads(tmp_path):
 
 @pytest.mark.asyncio
 async def test_close_drains_queue(tmp_path):
-    """A write enqueued before close() must complete before close() returns."""
+    """A write enqueued before close() must complete before close() returns.
+
+    Per the close() contract, callers must ensure writes are actually enqueued
+    (i.e. have reached db.write()) before calling close().  We yield once after
+    create_task() to let the task run up to its first await (the queue.put),
+    ensuring the item is queued before the stop sentinel is enqueued by close().
+    """
     db_path = str(tmp_path / "fleet_test.db")
     db = await init_db(db_path)
 
-    # Enqueue a write but do NOT await it yet
+    # Schedule the write task and yield so it runs up to its queue.put() call.
     write_task = asyncio.create_task(_insert_event(db))
+    await asyncio.sleep(0)
 
-    # Close immediately — must drain the pending write
+    # Close — must drain the already-enqueued write before the stop sentinel.
     await db.close()
 
     # The write task should now be done (close waited for it)
     assert write_task.done(), "write task should be completed after close()"
     rowid = write_task.result()
     assert rowid is not None and rowid > 0
+
+
+@pytest.mark.asyncio
+async def test_write_error_propagates_and_writer_survives(tmp_path):
+    """A write op that raises must propagate the exception to the caller.
+
+    The writer task must remain alive so subsequent writes still succeed.
+    """
+    db_path = str(tmp_path / "fleet_test.db")
+    db = await init_db(db_path)
+    try:
+        def boom_op(conn):  # type: ignore[no-untyped-def]
+            raise ValueError("boom")
+
+        # The exception must propagate to the caller.
+        with pytest.raises(ValueError, match="boom"):
+            await db.write(boom_op)
+
+        # Writer task must still be alive — a subsequent valid write succeeds.
+        rowid = await _insert_event(db, scope="after-error")
+        assert rowid is not None and rowid > 0
+    finally:
+        await db.close()
 
 
 # ---------------------------------------------------------------------------
