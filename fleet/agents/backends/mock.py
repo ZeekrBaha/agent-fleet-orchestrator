@@ -36,6 +36,13 @@ from fleet.agents.backends.protocol import (
 # ---------------------------------------------------------------------------
 
 
+def _require(obj: dict[str, object], key: str) -> object:
+    """Return ``obj[key]``, raising ``ValueError`` (not ``KeyError``) if absent."""
+    if key not in obj:
+        raise ValueError(f"missing required field '{key}'")
+    return obj[key]
+
+
 def _parse_line(line: str) -> BackendEvent:
     """Parse one JSONL line into a BackendEvent.
 
@@ -46,7 +53,7 @@ def _parse_line(line: str) -> BackendEvent:
     event_type = obj.get("type")
 
     if event_type == "text_chunk":
-        return TextChunk(text=str(obj["text"]))
+        return TextChunk(text=str(_require(obj, "text")))
 
     if event_type == "tool_use":
         raw_input = obj.get("input", {})
@@ -55,29 +62,29 @@ def _parse_line(line: str) -> BackendEvent:
             dict(raw_input) if isinstance(raw_input, dict) else {}
         )
         return ToolUseEvent(
-            tool_id=str(obj["tool_id"]),
-            tool_name=str(obj["tool_name"]),
+            tool_id=str(_require(obj, "tool_id")),
+            tool_name=str(_require(obj, "tool_name")),
             input=tool_input,
         )
 
     if event_type == "tool_result":
         return ToolResultEvent(
-            tool_id=str(obj["tool_id"]),
-            output=str(obj["output"]),
+            tool_id=str(_require(obj, "tool_id")),
+            output=str(_require(obj, "output")),
             is_error=bool(obj.get("is_error", False)),
         )
 
     if event_type == "turn_end":
         return TurnEnd(
-            cost_usd=float(str(obj["cost_usd"])),
-            input_tokens=int(str(obj["input_tokens"])),
-            output_tokens=int(str(obj["output_tokens"])),
-            context_pct=float(str(obj["context_pct"])),
+            cost_usd=float(str(_require(obj, "cost_usd"))),
+            input_tokens=int(str(_require(obj, "input_tokens"))),
+            output_tokens=int(str(_require(obj, "output_tokens"))),
+            context_pct=float(str(_require(obj, "context_pct"))),
         )
 
     if event_type == "error":
         return BackendError(
-            message=str(obj["message"]),
+            message=str(_require(obj, "message")),
             retryable=bool(obj.get("retryable", False)),
         )
 
@@ -93,11 +100,19 @@ def _load_transcript(path: Path) -> list[list[BackendEvent]]:
     turns: list[list[BackendEvent]] = []
     current_turn: list[BackendEvent] = []
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for lineno, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = raw_line.strip()
         if not line:
             continue  # skip blank lines
-        event = _parse_line(line)
+        try:
+            event = _parse_line(line)
+        except (ValueError, KeyError) as exc:
+            raise ValueError(
+                f"{path}:{lineno} — failed to parse JSONL line: {exc!r}\n"
+                f"  line: {line!r}"
+            ) from exc
         current_turn.append(event)
         if isinstance(event, (TurnEnd, BackendError)):
             turns.append(current_turn)
@@ -182,7 +197,8 @@ class MockBackend:
             ref = session_ref
 
         if ref not in self._sessions:
-            self._sessions[ref] = _SessionState(turns=self._turns)
+            # Shallow copy: inner per-turn lists are copied in send()
+            self._sessions[ref] = _SessionState(turns=list(self._turns))
 
         return ref
 
@@ -209,9 +225,9 @@ class MockBackend:
         If *interrupted* is True, yields nothing.
         """
         state = self._sessions[session_ref]
-        if state.interrupted:
-            return
-        for event in state.current_turn:
+        for event in list(state.current_turn):  # snapshot to avoid aliasing
+            if state.interrupted:
+                return
             yield event
 
     async def interrupt(self, session_ref: str) -> None:
