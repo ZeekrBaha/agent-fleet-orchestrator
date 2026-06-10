@@ -1,0 +1,65 @@
+version: "1"
+
+roles:
+  orchestrator:
+    allowed_tools:
+      - spawn_worker
+      - send_message
+      - list_agents
+      - get_agent_logs
+      - stop_agent
+      - request_approval
+      - memory_write
+      - update_progress
+      - report_issue
+    spawn_rate:
+      max_live_workers: 10
+      max_spawns_per_minute: 5
+
+  coder:
+    allowed_tools:
+      - send_message
+      - get_agent_logs
+      - worker_wip
+      - check_conflict
+      - record_validation
+      - update_progress
+      - report_issue
+      - request_approval
+      - memory_write
+
+  reviewer:
+    allowed_tools:
+      - get_agent_logs
+      - worker_wip
+      - check_conflict
+      - record_validation
+      - update_progress
+      - report_issue
+      - memory_write
+
+  # No tools — read-only observer
+  observer:
+    allowed_tools:
+      - list_agents
+      - get_agent_logs
+
+secret_paths:
+  - "**/.env"
+  - "**/.env.*"
+  - "**/secrets/**"
+  - "**/.ssh/**"
+  - "**/*.pem"
+  - "**/*.key"
+  - "**/credentials*"
+  - "**/.aws/**"
+  - "**/.gcp/**"
+  - "**/.config/gcloud/**"
+
+shell_rules:
+  timeout_s: 30
+  env_allowlist:
+    - HOME
+    - PATH
+    - LANG
+    - USER

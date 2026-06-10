@@ -25,6 +25,7 @@ dev-dependencies = [
     "mypy>=1.10",
     "playwright>=1.44",
     "anyio[trio]>=4.4",
+    "types-pyyaml>=6.0.12.20260518",
 ]
 
 [tool.ruff.lint]

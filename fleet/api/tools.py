@@ -1,4 +1,4 @@
-"""FastAPI router for Fleet tool endpoints (Task 4.1).
+"""FastAPI router for Fleet tool endpoints (Task 4.1 + 4.2).
 
 Exposes POST /api/tools/{tool_name} — one route that dispatches to the correct
 handler via a registry dict.  All tool inputs are validated by Pydantic before
@@ -6,9 +6,10 @@ any service call; invalid input → 422 (never 500).
 
 Each handler:
   1. Emits a ``tool_call`` event (payload scrubbed of secret values).
-  2. Executes the operation.
-  3. Emits a ``tool_result`` (or ``tool_result_error``) event.
-  4. Returns a result dict.
+  2. Checks policy (role-based ACL — fail-closed per ADR-005).
+  3. Executes the operation.
+  4. Emits a ``tool_result`` (or ``tool_result_error``) event.
+  5. Returns a result dict.
 
 Dependency injection follows the same module-level state-holder pattern used by
 fleet/api/agents.py and fleet/api/workspaces.py.
@@ -50,6 +51,9 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 _services: dict[str, Any] | None = None
 
+# Policy service — injected separately so it can be tested in isolation
+_policy_svc: Any = None
+
 
 def set_tool_services(
     agent_svc: Any,
@@ -58,8 +62,12 @@ def set_tool_services(
     worktree_svc: Any,
     db: Any,
 ) -> None:
-    """Wire service instances into this module (called at application startup)."""
-    global _services
+    """Wire service instances into this module (called at application startup).
+
+    Also resets the policy service to None so tests that don't call
+    set_policy_service() run without policy enforcement.
+    """
+    global _services, _policy_svc
     _services = {
         "agent_svc": agent_svc,
         "event_svc": event_svc,
@@ -67,6 +75,7 @@ def set_tool_services(
         "worktree_svc": worktree_svc,
         "db": db,
     }
+    _policy_svc = None
 
 
 def get_tool_services() -> dict[str, Any]:
@@ -76,6 +85,21 @@ def get_tool_services() -> dict[str, Any]:
             "Tool services not initialised — call set_tool_services() first"
         )
     return _services
+
+
+def set_policy_service(policy_svc: Any) -> None:
+    """Wire the PolicyService instance into this module."""
+    global _policy_svc
+    _policy_svc = policy_svc
+
+
+def get_policy_service() -> Any:
+    """Return the injected PolicyService; returns None if not configured.
+
+    None means no policy enforcement (backwards-compat for tests that
+    do not call set_policy_service).
+    """
+    return _policy_svc
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +480,34 @@ async def dispatch_tool(
     await _emit_tool_call(
         event_svc, scope, agent_id, tool_name, validated.model_dump()
     )
+
+    # --- Policy check (ADR-005: fail-closed) ---------------------------------
+    policy_svc = get_policy_service()
+    if policy_svc is not None:
+        # Look up the calling agent's role from the DB/service.
+        agent_svc = svcs.get("agent_svc")
+        calling_role: str = "unknown"
+        if agent_svc is not None and agent_id:
+            calling_agent = await agent_svc.get_agent(agent_id)
+            if calling_agent is not None:
+                calling_role = calling_agent.role
+
+        from fleet.policy.service import PolicyDenied
+
+        try:
+            policy_svc.check_tool_allowed(role=calling_role, tool_name=tool_name)
+        except PolicyDenied as exc:
+            await _emit_tool_error(event_svc, scope, agent_id, tool_name, exc.reason)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "type": "policy_denied",
+                    "title": "Tool access denied",
+                    "detail": exc.reason,
+                    "status": 403,
+                },
+            ) from exc
+    # -------------------------------------------------------------------------
 
     try:
         result = await handler(validated, svcs)
