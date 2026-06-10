@@ -1,0 +1,6 @@
+{"type": "text_chunk", "text": "Starting analysis of the task."}
+{"type": "turn_end", "cost_usd": 0.001, "input_tokens": 80, "output_tokens": 30, "context_pct": 0.08}
+{"type": "text_chunk", "text": "I've analyzed the requirements. Spawning worker now."}
+{"type": "tool_use", "tool_id": "tool-002", "tool_name": "spawn_worker", "input": {"name": "worker-2", "role": "coder", "task": "write tests"}}
+{"type": "tool_result", "tool_id": "tool-002", "output": "worker-2 spawned", "is_error": false}
+{"type": "turn_end", "cost_usd": 0.003, "input_tokens": 200, "output_tokens": 100, "context_pct": 0.22}
