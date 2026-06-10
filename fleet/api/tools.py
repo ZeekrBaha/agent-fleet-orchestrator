@@ -62,6 +62,7 @@ def set_tool_services(
     workspace_svc: Any,
     worktree_svc: Any,
     db: Any,
+    evidence_svc: Any = None,
 ) -> None:
     """Wire service instances into this module (called at application startup).
 
@@ -75,6 +76,7 @@ def set_tool_services(
         "workspace_svc": workspace_svc,
         "worktree_svc": worktree_svc,
         "db": db,
+        "evidence_svc": evidence_svc,
     }
     _policy_svc = None
 
@@ -331,6 +333,21 @@ async def _handle_check_conflict(
 async def _handle_record_validation(
     inp: RecordValidationInput, svcs: dict[str, Any]
 ) -> dict[str, object]:
+    # Prefer the EvidenceService when wired (Task 5.2); fall back to direct DB
+    # write for backward compatibility with test setups that omit evidence_svc.
+    evidence_svc = svcs.get("evidence_svc")
+    if evidence_svc is not None:
+        row_id: int = await evidence_svc.record_evidence(
+            task_id=inp.task_id,
+            command=inp.command,
+            exit_code=inp.exit_code,
+            summary=inp.summary,
+            skipped=inp.skipped,
+            residual_risk=inp.residual_risk,
+        )
+        return {"id": row_id, "task_id": inp.task_id, "recorded": True}
+
+    # Fallback: direct DB insert (evidence_svc not configured)
     db = svcs["db"]
     ts = datetime.now(UTC).isoformat()
 
@@ -358,7 +375,7 @@ async def _handle_record_validation(
             raise RuntimeError("INSERT did not return a rowid")
         return int(last_id)
 
-    row_id: int = await db.write(_write)
+    row_id = await db.write(_write)
     return {"id": row_id, "task_id": inp.task_id, "recorded": True}
 
 

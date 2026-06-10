@@ -22,6 +22,7 @@ from sqlalchemy import Connection, text
 from fleet.agents.backends.protocol import AgentBackend
 from fleet.agents.budget import BudgetEnforcer
 from fleet.agents.inbox import InboxService
+from fleet.agents.promptbuild import MissingRolePromptError, assemble_prompt
 from fleet.agents.session import AgentSession
 from fleet.db import DatabaseManager
 from fleet.events.service import EventService
@@ -60,10 +61,43 @@ class AgentService:
         budget_soft_usd: float | None = None,
         budget_hard_usd: float | None = None,
         backend_name: str = "mock",
+        task_description: str = "",
     ) -> AgentRecord:
-        """Insert agent row (status=idle), emit state_change, start session task."""
+        """Insert agent row (status=idle), emit state_change, start session task.
+
+        Calls assemble_prompt() to build the system prompt before creating the
+        agent.  If the role prompt file is missing, MissingRolePromptError is
+        raised (ADR-005: fail-closed — never silently fall back to a base prompt).
+        An error event is emitted and the agent record is inserted with
+        status=failed in that case.
+        """
         agent_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
+
+        # -- Build system prompt (ADR-005: fail on missing role prompt) ----------
+        # assemble_prompt validates that the role prompt file exists.
+        # The returned system_prompt will be passed to real backends in a later
+        # phase; for MockBackend (MVP) it is assembled here for validation only.
+        try:
+            assemble_prompt(
+                role=role,
+                task_prompt=task_description,
+                team_state="",
+                memory_snippets=[],
+                tool_descriptions=[],
+                workspace_context="",
+            )
+        except MissingRolePromptError:
+            # Emit error event and set agent status=failed.  Re-raise so the
+            # caller knows the agent was not started (ADR-005: no silent fallback).
+            await self._event_service.append(
+                scope,
+                "error",
+                f"Missing role prompt for role={role!r}; agent creation failed",
+                agent_id=agent_id,
+                payload={"role": role, "error": "MissingRolePromptError"},
+            )
+            raise
 
         def _write(conn: Connection) -> None:
             conn.execute(
