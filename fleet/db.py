@@ -134,9 +134,16 @@ class DatabaseManager:
 
             try:
                 result = await asyncio.to_thread(_run, self._engine, item.operation)
-                item.future.set_result(result)
+                # Guard: the caller may have been cancelled while waiting for
+                # this future (e.g. a session task was shut down).  In that
+                # case the future is already in CANCELLED state and calling
+                # set_result/set_exception would raise InvalidStateError,
+                # crashing the writer task and breaking queue.join().
+                if not item.future.cancelled():
+                    item.future.set_result(result)
             except Exception as exc:  # noqa: BLE001 — bubble to caller via future
-                item.future.set_exception(exc)
+                if not item.future.cancelled():
+                    item.future.set_exception(exc)
             finally:
                 self._queue.task_done()
 
