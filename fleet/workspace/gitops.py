@@ -4,15 +4,20 @@ All functions take a ``cwd`` path (the repository root) and run git with a
 configurable timeout.  No business logic lives here — only subprocess wrappers.
 
 Public API:
-    GitError                        — raised on non-zero git exit or timeout
-    git_run(cmd, cwd, timeout)      — run git, return stdout
-    detect_default_branch(repo_path) — infer default branch name
-    is_repo_dirty(repo_path)        — True if working tree has uncommitted changes
-    list_untracked(repo_path)       — list of untracked/modified files
+    GitError                          — raised on non-zero git exit or timeout
+    git_run(cmd, cwd, timeout)        — run git, return stdout
+    detect_default_branch(repo_path)  — infer default branch name
+    is_repo_dirty(repo_path)          — True if working tree has uncommitted changes
+    list_untracked(repo_path)         — list of untracked/modified files
+    worktree_add(repo, wt, branch, base_branch) — create a new git worktree
+    worktree_remove(repo, wt)         — remove a git worktree + prune
+    get_worktree_status(wt)           — ahead/dirty_files/branch dict
+    simulate_merge(repo, branch, target) — dry-run merge, returns (conflict, summary)
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -148,3 +153,200 @@ def list_untracked(repo_path: str | Path) -> list[str]:
         if len(line) > 3:
             files.append(line[3:].strip())
     return files
+
+
+# ---------------------------------------------------------------------------
+# Worktree helpers (Task 3.2)
+# ---------------------------------------------------------------------------
+
+
+def worktree_add(
+    repo_path: str | Path,
+    worktree_path: str | Path,
+    branch: str,
+    *,
+    base_branch: str | None = None,
+) -> None:
+    """Create a new worktree at *worktree_path* on *branch*.
+
+    If *branch* doesn't already exist, it is created from *base_branch*
+    (or HEAD if *base_branch* is None).
+
+    On any failure the worktree directory is removed to avoid orphans.
+
+    Args:
+        repo_path:     Path to the main repository root.
+        worktree_path: Destination directory for the new worktree (must not exist).
+        branch:        Branch name to check out in the new worktree.
+        base_branch:   Existing branch/commit to branch from; defaults to HEAD.
+
+    Raises:
+        GitError: If git worktree add fails.  worktree_path is cleaned up first.
+    """
+    wt_path = Path(worktree_path)
+    repo = Path(repo_path)
+
+    # Determine whether the branch already exists.
+    branch_exists = False
+    try:
+        git_run(
+            ["git", "show-ref", "--verify", f"refs/heads/{branch}"],
+            cwd=repo,
+        )
+        branch_exists = True
+    except GitError:
+        pass  # branch does not yet exist — we will create it
+
+    try:
+        if branch_exists:
+            # Check out the existing branch in the new worktree.
+            git_run(
+                ["git", "worktree", "add", str(wt_path), branch],
+                cwd=repo,
+            )
+        else:
+            # Create a new branch and check it out.
+            cmd = ["git", "worktree", "add", "-b", branch, str(wt_path)]
+            if base_branch is not None:
+                cmd.append(base_branch)
+            git_run(cmd, cwd=repo)
+    except GitError:
+        # Cleanup: remove the (potentially partially created) worktree dir.
+        if wt_path.exists():
+            shutil.rmtree(wt_path, ignore_errors=True)
+        raise
+
+
+def worktree_remove(repo_path: str | Path, worktree_path: str | Path) -> None:
+    """Remove a worktree and prune stale worktree metadata.
+
+    Runs ``git worktree remove --force <path>`` then ``git worktree prune``.
+
+    Args:
+        repo_path:     Path to the main repository root.
+        worktree_path: Path to the worktree to remove.
+
+    Raises:
+        GitError: If git worktree remove fails.
+    """
+    repo = Path(repo_path)
+    git_run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=repo,
+    )
+    # Prune stale metadata; failure is non-fatal (best effort).
+    try:
+        git_run(["git", "worktree", "prune"], cwd=repo)
+    except GitError:
+        pass  # prune failure is cosmetic; worktree removal already succeeded
+
+
+def get_worktree_status(worktree_path: str | Path) -> dict[str, object]:
+    """Return status information for a worktree.
+
+    Returns a dict with:
+        ahead        (int)       — commits ahead of the first parent of HEAD
+        dirty_files  (list[str]) — files with uncommitted changes
+        branch       (str)       — current branch name (or commit hash if detached)
+
+    Args:
+        worktree_path: Path to the worktree directory.
+    """
+    wt = Path(worktree_path)
+
+    # Current branch name.
+    try:
+        branch = git_run(["git", "symbolic-ref", "--short", "HEAD"], cwd=wt)
+    except GitError:
+        # Detached HEAD — return the short commit hash instead.
+        branch = git_run(["git", "rev-parse", "--short", "HEAD"], cwd=wt)
+
+    # Commits ahead of the merge-base with the upstream/parent branch.
+    # We use HEAD~1 as the "base" if no upstream is configured; if there's only
+    # one commit (no parent) we report 0 rather than crashing.
+    try:
+        ahead_str = git_run(
+            ["git", "rev-list", "--count", "HEAD@{upstream}..HEAD"],
+            cwd=wt,
+        )
+        ahead = int(ahead_str) if ahead_str else 0
+    except GitError:
+        # No upstream configured — count commits since the branch forked from
+        # the first parent chain, or fall back to 0.
+        try:
+            ahead_str = git_run(
+                ["git", "rev-list", "--count", "HEAD^..HEAD"],
+                cwd=wt,
+            )
+            ahead = int(ahead_str) if ahead_str else 0
+        except GitError:
+            # Initial commit with no parent — 0 ahead.
+            ahead = 0
+
+    # Uncommitted files (staged + unstaged).
+    dirty_output = git_run(["git", "status", "--porcelain"], cwd=wt)
+    dirty_files: list[str] = []
+    if dirty_output:
+        for line in dirty_output.splitlines():
+            if len(line) > 3:
+                dirty_files.append(line[3:].strip())
+
+    return {"ahead": ahead, "dirty_files": dirty_files, "branch": branch}
+
+
+def simulate_merge(
+    repo_path: str | Path,
+    branch: str,
+    target_branch: str,
+) -> tuple[bool, str]:
+    """Simulate a merge of *branch* into *target_branch* without touching the repo.
+
+    Uses ``git merge-tree`` (3-way merge simulation) to detect conflicts.
+    The repository is NEVER modified.
+
+    Args:
+        repo_path:     Path to the main repository root.
+        branch:        The branch to be merged (source).
+        target_branch: The branch to merge into (destination).
+
+    Returns:
+        (has_conflict, conflict_summary) tuple.
+        has_conflict is True if git reports conflict markers.
+        conflict_summary is a short human-readable description.
+    """
+    repo = Path(repo_path)
+
+    # Find the common merge-base commit.
+    try:
+        merge_base = git_run(
+            ["git", "merge-base", target_branch, branch],
+            cwd=repo,
+        )
+    except GitError as exc:
+        return True, f"could not find merge-base: {exc}"
+
+    # Run git merge-tree (3-way virtual merge) — does NOT touch the working tree.
+    # Uses the deprecated 3-arg form (git < 2.38 compatible).
+    # Output contains conflict markers "<<<<<<" when conflicts exist.
+    # On git >= 2.38, consider switching to: git merge-tree --stdin
+    try:
+        output = git_run(
+            ["git", "merge-tree", merge_base, target_branch, branch],
+            cwd=repo,
+        )
+    except GitError as exc:
+        return True, f"merge-tree failed: {exc}"
+
+    # git merge-tree emits conflict markers when conflicts are present.
+    has_conflict = "<<<<<<" in output or "CONFLICT" in output
+    if has_conflict:
+        # Summarise: first few lines that contain conflict markers.
+        conflict_lines = [
+            line for line in output.splitlines()
+            if any(tok in line for tok in ("<<<<<<", ">>>>>>", "=======", "CONFLICT"))
+        ]
+        summary = "\n".join(conflict_lines[:10])
+    else:
+        summary = ""
+
+    return has_conflict, summary
