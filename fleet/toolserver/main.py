@@ -23,7 +23,7 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
-from fleet.api.tools import (
+from fleet.api.tool_schemas import (
     CheckConflictInput,
     GetAgentLogsInput,
     ListAgentsInput,

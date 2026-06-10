@@ -23,10 +23,24 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import Connection, text
 
 from fleet.api.auth import require_token
+from fleet.api.tool_schemas import (
+    CheckConflictInput,
+    GetAgentLogsInput,
+    ListAgentsInput,
+    MemoryWriteInput,
+    RecordValidationInput,
+    ReportIssueInput,
+    RequestApprovalInput,
+    SendMessageInput,
+    SpawnWorkerInput,
+    StopAgentInput,
+    UpdateProgressInput,
+    WorkerWipInput,
+)
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -65,107 +79,6 @@ def get_tool_services() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Tool input schemas — all include agent_id and scope
-# ---------------------------------------------------------------------------
-
-
-class SpawnWorkerInput(BaseModel):
-    agent_id: str
-    scope: str
-    name: str = Field(min_length=1, max_length=64)
-    role: str = Field(min_length=1)
-    task_description: str
-    model: str = Field(default="claude-sonnet-4-6")
-    repository_id: str | None = None
-    owned_paths: list[str] = Field(default_factory=list)
-    budget_soft_usd: float | None = None
-    budget_hard_usd: float | None = None
-
-
-class SendMessageInput(BaseModel):
-    agent_id: str
-    scope: str
-    target_agent_id: str
-    message: str = Field(min_length=1, max_length=32768)
-
-
-class ListAgentsInput(BaseModel):
-    agent_id: str
-    scope: str
-
-
-class GetAgentLogsInput(BaseModel):
-    agent_id: str
-    scope: str
-    target_agent_id: str
-    limit: int = Field(default=50, ge=1, le=500)
-
-
-class StopAgentInput(BaseModel):
-    agent_id: str
-    scope: str
-    target_agent_id: str
-    reason: str = Field(default="", max_length=256)
-
-
-class WorkerWipInput(BaseModel):
-    agent_id: str
-    scope: str
-    target_agent_id: str
-
-
-class CheckConflictInput(BaseModel):
-    agent_id: str
-    scope: str
-    worktree_id: str
-    target_branch: str = Field(default="main")
-
-
-class RecordValidationInput(BaseModel):
-    agent_id: str
-    scope: str
-    task_id: str
-    command: str = Field(min_length=1, max_length=1024)
-    exit_code: int
-    summary: str = Field(max_length=4096)
-    skipped: str | None = None
-    residual_risk: str | None = None
-
-
-class ReportIssueInput(BaseModel):
-    agent_id: str
-    scope: str
-    title: str = Field(min_length=1, max_length=256)
-    description: str = Field(max_length=8192)
-    severity: str = Field(default="info", pattern=r"^(info|warning|error|critical)$")
-
-
-class UpdateProgressInput(BaseModel):
-    agent_id: str
-    scope: str
-    message: str = Field(min_length=1, max_length=1024)
-    percent: int | None = Field(default=None, ge=0, le=100)
-
-
-class RequestApprovalInput(BaseModel):
-    agent_id: str
-    scope: str
-    operation: str = Field(min_length=1, max_length=256)
-    rationale: str = Field(min_length=1, max_length=2048)
-    risk: str = Field(max_length=1024)
-
-
-class MemoryWriteInput(BaseModel):
-    agent_id: str
-    scope: str
-    kind: str = Field(
-        pattern=r"^(architecture_decision|known_bug|failed_attempt|command_recipe|dependency_note|deployment_note)$"
-    )
-    title: str = Field(min_length=1, max_length=256)
-    body: str = Field(min_length=1, max_length=16384)
-
-
-# ---------------------------------------------------------------------------
 # Secret scrubbing — remove values whose keys match secret patterns
 # ---------------------------------------------------------------------------
 
@@ -175,7 +88,11 @@ _SECRET_KEY_PATTERN = re.compile(
 
 
 def _scrub_payload(payload: dict[str, object]) -> dict[str, object]:
-    """Return a copy of payload with secret-looking values replaced by '[REDACTED]'."""
+    """Return a copy of payload with secret-looking values replaced by '[REDACTED]'.
+
+    # TODO(security): only key-name scrubbing implemented; value-pattern scrubbing
+    # (e.g. bearer tokens in message bodies) is out of scope for MVP.
+    """
     scrubbed: dict[str, object] = {}
     for k, v in payload.items():
         if _SECRET_KEY_PATTERN.search(k):
@@ -231,7 +148,7 @@ async def _emit_tool_error(
 ) -> None:
     await event_svc.append(
         scope,
-        "tool_result",
+        "tool_result_error",
         f"Tool error: {tool_name}",
         agent_id=agent_id,
         payload={"tool_name": tool_name, "error": error},
@@ -327,18 +244,34 @@ async def _handle_worker_wip(
 async def _handle_check_conflict(
     inp: CheckConflictInput, svcs: dict[str, Any]
 ) -> dict[str, object]:
-    worktree_svc = svcs["worktree_svc"]
-    # Delegate to worktree service; simulate_merge is done via get_wip_report path.
-    # We return the current WIP status as a conflict indicator.
-    try:
-        wip: dict[str, object] = await worktree_svc.get_wip_report(inp.worktree_id)
-        return {
-            "worktree_id": inp.worktree_id,
-            "target_branch": inp.target_branch,
-            "wip": wip,
-        }
-    except ValueError as exc:
-        return {"error": str(exc)}
+    """Simulate merging the worktree branch into target_branch and report conflicts."""
+    from fleet.workspace.gitops import simulate_merge
+
+    db = svcs["db"]
+
+    # Look up the worktree record directly via DB to get repo path and branch.
+    with db.read_connection() as conn:
+        row = conn.execute(
+            text(
+                "SELECT w.branch, r.path AS repo_path"
+                " FROM worktrees w"
+                " JOIN repositories r ON w.repository_id = r.id"
+                " WHERE w.id = :id"
+            ),
+            {"id": inp.worktree_id},
+        ).fetchone()
+
+    if row is None:
+        raise ValueError(f"Worktree not found: {inp.worktree_id!r}")
+
+    has_conflict, conflict_summary = simulate_merge(
+        row.repo_path, row.branch, inp.target_branch
+    )
+    return {
+        "worktree_id": inp.worktree_id,
+        "has_conflict": has_conflict,
+        "conflict_summary": conflict_summary,
+    }
 
 
 async def _handle_record_validation(

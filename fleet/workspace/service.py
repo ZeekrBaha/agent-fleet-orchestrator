@@ -4,6 +4,14 @@ Manages the ``repositories`` table: registering, querying, and unregistering
 git repositories.  All writes go through the DatabaseManager's single-writer
 queue; reads use read_connection().
 
+Worktree management lives in ``fleet.workspace.worktree_service``; this module
+re-exports the key names so callers can import from one place:
+
+    from fleet.workspace.service import (
+        WorkspaceService, WorktreeService,
+        DirtyRepoError, OverlapError, WorktreeError,
+    )
+
 Public API:
     RepositoryRecord                               — dataclass for a repo row
     WorkspaceService(db, event_service)
@@ -27,6 +35,15 @@ from sqlalchemy import Connection, text
 from fleet.db import DatabaseManager
 from fleet.events.service import EventService
 from fleet.workspace.gitops import GitError, detect_default_branch
+
+# Re-export worktree types so callers can ``from fleet.workspace.service import``
+# all workspace-related names from a single module.
+from fleet.workspace.worktree_service import (  # noqa: F401
+    DirtyRepoError,
+    OverlapError,
+    WorktreeError,
+    WorktreeService,
+)
 
 
 @dataclass

@@ -364,3 +364,159 @@ async def test_unknown_tool_returns_404(tools_client: AsyncClient) -> None:
         json={"agent_id": "agent-1", "scope": "scope-1"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_tool_error_emits_tool_result_error_event(
+    db: DatabaseManager,
+    event_service: EventService,
+) -> None:
+    """When a tool handler raises, a tool_result_error event is emitted."""
+    from sqlalchemy import text
+
+    from fleet.api.tools import router, set_tool_services
+
+    # Inject a worktree_svc that raises ValueError to trigger the error path.
+    mock_worktree_svc = AsyncMock()
+    mock_worktree_svc.get_wip_report.side_effect = ValueError("worktree gone")
+
+    # worker_wip requires agent_svc.get_agent to return something with worktree_id set.
+    mock_agent = MagicMock()
+    mock_agent.worktree_id = "wt-99"
+    mock_agent_svc = AsyncMock()
+    mock_agent_svc.get_agent.return_value = mock_agent
+
+    set_tool_services(
+        agent_svc=mock_agent_svc,
+        event_svc=event_service,
+        workspace_svc=None,
+        worktree_svc=mock_worktree_svc,
+        db=db,
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[require_token] = _no_auth
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/tools/worker_wip",
+            json={
+                "agent_id": "agent-1",
+                "scope": "error-scope",
+                "target_agent_id": "agent-99",
+            },
+        )
+
+    # Handler raises ValueError → 400; the important thing is the audit event.
+    assert resp.status_code == 400
+
+    with db.read_connection() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT type FROM events WHERE scope = 'error-scope'"
+                " ORDER BY id ASC"
+            )
+        ).fetchall()
+
+    event_types = [r.type for r in rows]
+    assert "tool_call" in event_types
+    assert "tool_result_error" in event_types
+    assert "tool_result" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_check_conflict_returns_has_conflict(
+    db: DatabaseManager,
+    event_service: EventService,
+    tmp_path: Any,
+) -> None:
+    """POST /api/tools/check_conflict returns has_conflict for a diverged branch."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    from fleet.api.tools import router, set_tool_services
+    from tests.fixtures.gitrepo import GitRepoFactory
+
+    # Create a repo with conflict potential (main and feature both modify file.txt).
+    factory = GitRepoFactory(tmp_path)
+    repo_path = factory.make_with_conflict_potential(name="conflict-repo")
+
+    now = datetime.now(UTC).isoformat()
+    repo_id = "repo-conflict-1"
+    agent_id = "agent-conflict-1"
+    worktree_id = "wt-conflict-1"
+
+    def _seed(conn: Any) -> None:
+        conn.execute(
+            text(
+                "INSERT INTO repositories"
+                " (id, path, default_branch, merge_policy_json, created_at)"
+                " VALUES (:id, :path, 'main', '{}', :now)"
+            ),
+            {"id": repo_id, "path": str(repo_path), "now": now},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO agents"
+                " (id, name, scope, role, backend, model, status,"
+                "  created_at, updated_at)"
+                " VALUES (:id, :name, 'scope-1', 'coder', 'mock',"
+                "  'claude-sonnet-4-6', 'idle', :now, :now)"
+            ),
+            {"id": agent_id, "name": "conflict-agent", "now": now},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO worktrees"
+                " (id, agent_id, repository_id, path, branch, base_branch,"
+                "  owned_paths_json, status, created_at)"
+                " VALUES (:id, :agent_id, :repo_id, :path, 'feature', 'main',"
+                "  '[]', 'active', :now)"
+            ),
+            {
+                "id": worktree_id,
+                "agent_id": agent_id,
+                "repo_id": repo_id,
+                "path": str(repo_path),
+                "now": now,
+            },
+        )
+        conn.commit()
+
+    await db.write(_seed)
+
+    set_tool_services(
+        agent_svc=None,
+        event_svc=event_service,
+        workspace_svc=None,
+        worktree_svc=None,
+        db=db,
+    )
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[require_token] = _no_auth
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/tools/check_conflict",
+            json={
+                "agent_id": agent_id,
+                "scope": "scope-1",
+                "worktree_id": worktree_id,
+                "target_branch": "main",
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "has_conflict" in data
+    assert isinstance(data["has_conflict"], bool)
+    # The conflict-potential repo always has a conflict between feature and main.
+    assert data["has_conflict"] is True
+
+    factory.cleanup()
