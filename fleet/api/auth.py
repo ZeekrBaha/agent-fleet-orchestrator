@@ -8,6 +8,8 @@ Usage in a route:
 
 from __future__ import annotations
 
+import functools
+import hmac
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
@@ -15,8 +17,9 @@ from fastapi import Depends, HTTPException, Request
 from fleet.config import Settings
 
 
+@functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return a fresh Settings instance (reads env-vars on each call)."""
+    """Return a cached Settings instance (reads env-vars once per process)."""
     return Settings()
 
 
@@ -40,5 +43,5 @@ async def require_token(
     configured = settings.api_token.strip()
 
     # An empty configured token means auth is not set up — always reject.
-    if not configured or token != configured:
+    if not configured or not hmac.compare_digest(token, configured):
         raise HTTPException(status_code=401, detail="Unauthorized")

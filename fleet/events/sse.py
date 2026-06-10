@@ -26,11 +26,14 @@ class Subscription:
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[Event | None] = asyncio.Queue(maxsize=100)
         self.id: int = next(_id_counter)
 
     def _put_nowait(self, event: Event | None) -> None:
-        self._queue.put_nowait(event)
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass  # Slow subscriber — drop event rather than blocking publish
 
     def __aiter__(self) -> AsyncIterator[Event]:
         return self._iterate()

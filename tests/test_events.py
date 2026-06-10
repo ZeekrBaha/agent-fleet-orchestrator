@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -329,7 +330,11 @@ async def test_auth_rejects_missing_token(tmp_path: pytest.TempPathFactory) -> N
     app.state.sse_hub = SSEHub()
 
     # Set a real token in the environment so require_token validates against it
-    os.environ["FLEET_API_TOKEN"] = "secret-token"
+    from fleet.api.auth import get_settings
+
+    test_token = secrets.token_hex(16)
+    get_settings.cache_clear()
+    os.environ["FLEET_API_TOKEN"] = test_token
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -341,6 +346,7 @@ async def test_auth_rejects_missing_token(tmp_path: pytest.TempPathFactory) -> N
             assert resp.status_code == 401
     finally:
         del os.environ["FLEET_API_TOKEN"]
+        get_settings.cache_clear()
         await manager.close()
 
 
@@ -360,19 +366,24 @@ async def test_auth_accepts_correct_token(tmp_path: pytest.TempPathFactory) -> N
     app.state.event_service = svc
     app.state.sse_hub = SSEHub()
 
-    os.environ["FLEET_API_TOKEN"] = "my-token"
+    from fleet.api.auth import get_settings
+
+    test_token = secrets.token_hex(16)
+    get_settings.cache_clear()
+    os.environ["FLEET_API_TOKEN"] = test_token
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
             resp = await client.post(
                 "/api/events",
-                headers={"Authorization": "Bearer my-token"},
+                headers={"Authorization": f"Bearer {test_token}"},
                 json={"scope": "s", "type": "t", "summary": "x"},
             )
             assert resp.status_code == 200
     finally:
         del os.environ["FLEET_API_TOKEN"]
+        get_settings.cache_clear()
         await manager.close()
 
 
