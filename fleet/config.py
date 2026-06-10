@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,7 +26,10 @@ class Settings(BaseSettings):
 
     def is_local_bind(self) -> bool:
         """Return True iff the host is a loopback address."""
-        return self.host in ("127.0.0.1", "::1")
+        try:
+            return ipaddress.ip_address(self.host).is_loopback
+        except ValueError:
+            return False
 
     def validate_for_startup(self) -> None:
         """Raise ConfigurationError if the configuration is unsafe to start with.
@@ -33,7 +38,7 @@ class Settings(BaseSettings):
         - A non-local bind with no API token means the server is reachable from
           the network with no authentication, which is forbidden.
         """
-        if not self.api_token and not self.is_local_bind():
+        if not self.api_token.strip() and not self.is_local_bind():
             raise ConfigurationError(
                 "FLEET_API_TOKEN must be set when binding to a non-loopback address "
                 f"(current host: {self.host!r}). "

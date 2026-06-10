@@ -43,7 +43,7 @@ class Event(BaseModel):
     agent_id: str | None = None
     type: str
     summary: str
-    payload: dict  # type: ignore[type-arg]
+    payload: dict[str, object]
 
 
 class AgentRecord(BaseModel):
