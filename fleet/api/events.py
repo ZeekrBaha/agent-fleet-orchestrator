@@ -12,7 +12,7 @@ import asyncio
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -86,7 +86,7 @@ async def query_events(
     agent_id: str | None = None,
     type_filter: str | None = None,
     after_id: int | None = None,
-    limit: int = 200,
+    limit: int = Query(default=200, le=1000),
 ) -> list[Event]:
     """Query events with optional filters."""
     return await service.query(

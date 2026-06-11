@@ -66,7 +66,7 @@ class TaskCreate(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/tasks")
+@router.post("/tasks", status_code=201)
 async def create_task(
     body: TaskCreate,
     _auth: Annotated[None, Depends(require_token)],

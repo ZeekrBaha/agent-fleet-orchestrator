@@ -495,7 +495,7 @@ async def test_evidence_gate_api(
             },
             headers=headers,
         )
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == 201, resp.text
         task_id = resp.json()["task_id"]
         assert task_id
 

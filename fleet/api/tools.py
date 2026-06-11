@@ -59,6 +59,7 @@ from fleet.api.tool_schemas import (
     WorkerWipInput,
 )
 from fleet.policy.service import PolicyDenied
+from fleet.review.lock import MergeInProgressError
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -374,6 +375,8 @@ async def dispatch_tool(
         # Typed mapping: ValueError → 400, Exception → 500
         error_msg = str(exc)
         await _emit_tool_error(event_svc, scope, agent_id, tool_name, error_msg)
+        if isinstance(exc, MergeInProgressError):
+            raise HTTPException(status_code=409, detail=error_msg) from exc
         if isinstance(exc, ValueError):
             raise HTTPException(status_code=400, detail=error_msg) from exc
         raise HTTPException(
