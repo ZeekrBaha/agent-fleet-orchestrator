@@ -38,4 +38,4 @@ python_version = "3.12"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-m 'not live and not slow'"
-markers = ["live: requires real API keys", "slow: long-running"]
+markers = ["live: requires real API keys", "slow: long-running", "smoke: full-app boot-and-smoke tests"]
