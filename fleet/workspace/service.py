@@ -24,6 +24,7 @@ Public API:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass
@@ -130,7 +131,9 @@ class WorkspaceService:
         # Auto-detect branch if not supplied.
         if default_branch is None:
             try:
-                default_branch = detect_default_branch(repo_path)
+                default_branch = await asyncio.to_thread(
+                    detect_default_branch, repo_path
+                )
             except GitError as exc:
                 # Can't detect branch — fall back to "main" here.
                 # This is the single fallback point for default branch detection.

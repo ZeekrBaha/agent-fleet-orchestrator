@@ -256,8 +256,8 @@ async def _handle_check_conflict(
     if row is None:
         raise ValueError(f"Worktree not found: {inp.worktree_id!r}")
 
-    result = ConflictChecker().check(
-        row.repo_path, row.branch, inp.target_branch
+    result = await asyncio.to_thread(
+        ConflictChecker().check, row.repo_path, row.branch, inp.target_branch
     )
     return {
         "worktree_id": inp.worktree_id,

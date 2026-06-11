@@ -34,6 +34,7 @@ from fleet.models import WorktreeRecord
 from fleet.workspace.gitops import (
     GitError,
     get_worktree_status,
+    git_run,
     is_repo_dirty,
     worktree_add,
     worktree_remove,
@@ -190,7 +191,7 @@ class WorktreeService:
         if repo is None:
             raise ValueError(f"Repository not found: {repo_id!r}")
 
-        if not skip_dirty_check and is_repo_dirty(repo.path):
+        if not skip_dirty_check and await asyncio.to_thread(is_repo_dirty, repo.path):
             raise DirtyRepoError(
                 options=["continue_dirty", "stash", "commit", "cancel"]
             )
@@ -221,7 +222,7 @@ class WorktreeService:
             worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                worktree_add(repo.path, worktree_path, branch)
+                await asyncio.to_thread(worktree_add, repo.path, worktree_path, branch)
             except GitError as exc:
                 raise WorktreeError(f"git worktree add failed: {exc}") from exc
 
@@ -298,7 +299,7 @@ class WorktreeService:
             )
 
         try:
-            worktree_remove(repo.path, record.path)
+            await asyncio.to_thread(worktree_remove, repo.path, record.path)
         except GitError as exc:
             raise WorktreeError(f"git worktree remove failed: {exc}") from exc
 
@@ -339,7 +340,7 @@ class WorktreeService:
         if record is None:
             raise ValueError(f"Worktree not found: {worktree_id!r}")
 
-        return get_worktree_status(record.path)
+        return await asyncio.to_thread(get_worktree_status, record.path)
 
     async def list_worktrees(
         self, repo_id: str, *, status: str | None = None
@@ -410,10 +411,8 @@ class WorktreeService:
             return  # No-op: caller decides whether to retry.
 
         if option == "stash":
-            from fleet.workspace.gitops import git_run as _git_run
-
             try:
-                _git_run(["git", "stash"], cwd=repo.path)
+                await asyncio.to_thread(git_run, ["git", "stash"], cwd=repo.path)
             except GitError as exc:
                 raise WorktreeError(f"git stash failed: {exc}") from exc
 
@@ -431,12 +430,10 @@ class WorktreeService:
                     "commit_message is required when option='commit'"
                 )
 
-            from fleet.workspace.gitops import git_run as _git_run
-
             try:
-                _git_run(["git", "add", "-A"], cwd=repo.path)
-                _git_run(
-                    ["git", "commit", "-m", commit_message], cwd=repo.path
+                await asyncio.to_thread(git_run, ["git", "add", "-A"], cwd=repo.path)
+                await asyncio.to_thread(
+                    git_run, ["git", "commit", "-m", commit_message], cwd=repo.path
                 )
             except GitError as exc:
                 raise WorktreeError(f"git commit failed: {exc}") from exc
