@@ -65,7 +65,7 @@ def repo_factory(tmp_path: Any) -> Any:
 async def evidence_svc(db: DatabaseManager) -> Any:
     from fleet.review.evidence import EvidenceService
 
-    return EvidenceService(db)
+    return EvidenceService(db, gate_require_reviewer=False)
 
 
 # ---------------------------------------------------------------------------

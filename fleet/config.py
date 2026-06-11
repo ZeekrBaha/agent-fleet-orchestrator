@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     db_path: str = "fleet.db"
     secret_patterns: list[str] = ["FLEET_API_TOKEN"]
     compaction_threshold: int = 80_000
+    gate_require_reviewer: bool = True
 
     def is_local_bind(self) -> bool:
         """Return True iff the host is a loopback address."""

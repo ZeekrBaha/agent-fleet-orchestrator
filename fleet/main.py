@@ -71,7 +71,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     workspace_svc = WorkspaceService(manager, event_svc)
     worktree_svc = WorktreeService(manager, event_svc, workspace_svc)
-    evidence_svc = EvidenceService(manager)
+    evidence_svc = EvidenceService(
+        manager, gate_require_reviewer=settings.gate_require_reviewer
+    )
     conflict_checker = ConflictChecker()
     merge_lock = MergeLock()
     merge_svc = MergeService(

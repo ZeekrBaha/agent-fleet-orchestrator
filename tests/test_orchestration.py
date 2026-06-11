@@ -102,7 +102,7 @@ async def event_service(db: DatabaseManager, hub: SSEHub) -> EventService:
 
 @pytest_asyncio.fixture
 async def evidence_service(db: DatabaseManager) -> EvidenceService:
-    return EvidenceService(db)
+    return EvidenceService(db, gate_require_reviewer=False)
 
 
 @pytest_asyncio.fixture
@@ -251,7 +251,7 @@ async def test_golden_event_sequence(
     _DEFAULT_MANIFEST_PATH = os.path.join(
         os.path.dirname(__file__), "..", "fleet", "manifests", "default.yaml"
     )
-    evidence_svc = EvidenceService(db)
+    evidence_svc = EvidenceService(db, gate_require_reviewer=False)
 
     inbox = InboxService(db)
     agent_svc = AgentService(db, event_service, inbox)
@@ -472,7 +472,7 @@ async def test_evidence_gate_api(
     from fleet.api.review import router, set_evidence_service
     from fleet.review.evidence import EvidenceService
 
-    evidence_svc = EvidenceService(db)
+    evidence_svc = EvidenceService(db, gate_require_reviewer=False)
     set_evidence_service(evidence_svc)
 
     app = FastAPI()
@@ -544,7 +544,7 @@ async def test_get_task_returns_404_for_missing(
     from fleet.api.review import router, set_evidence_service
     from fleet.review.evidence import EvidenceService
 
-    evidence_svc = EvidenceService(db)
+    evidence_svc = EvidenceService(db, gate_require_reviewer=False)
     set_evidence_service(evidence_svc)
 
     app = FastAPI()

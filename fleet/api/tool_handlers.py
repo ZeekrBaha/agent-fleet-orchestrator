@@ -278,18 +278,17 @@ async def _handle_record_validation(
             status_code=503, detail="evidence service not available"
         )
 
+    calling_agent = svcs.get("_calling_agent")
+    calling_role: str = calling_agent.role if calling_agent is not None else ""
+
     row_id: int = await evidence_svc.record_evidence(
         task_id=inp.task_id,
         check_name=inp.check_name,
         status=inp.status,
         output=inp.output,
         recorded_by=inp.recorded_by if inp.recorded_by else inp.agent_id,
+        recorded_by_role=calling_role if calling_role else None,
     )
-
-    # Emit a review_verdict event when a reviewer records a "review" check.
-    # _calling_agent is injected by dispatch_tool before handler invocation.
-    calling_agent = svcs.get("_calling_agent")
-    calling_role: str = calling_agent.role if calling_agent is not None else ""
     if inp.check_name == "review" and calling_role == "reviewer":
         event_svc = svcs.get("event_svc")
         if event_svc is None:

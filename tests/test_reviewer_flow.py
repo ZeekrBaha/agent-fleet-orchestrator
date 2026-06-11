@@ -92,7 +92,7 @@ async def event_service(db: DatabaseManager) -> EventService:
 async def evidence_svc(db: DatabaseManager) -> Any:
     from fleet.review.evidence import EvidenceService
 
-    return EvidenceService(db)
+    return EvidenceService(db, gate_require_reviewer=False)
 
 
 def _build_tools_app(
@@ -106,7 +106,11 @@ def _build_tools_app(
     from fleet.api.tools import router, set_policy_service, set_tool_services
     from fleet.review.evidence import EvidenceService
 
-    _evidence_svc = evidence_svc if evidence_svc is not None else EvidenceService(db)
+    _evidence_svc = (
+        evidence_svc
+        if evidence_svc is not None
+        else EvidenceService(db, gate_require_reviewer=False)
+    )
 
     set_tool_services(
         agent_svc=agent_svc or _make_mock_agent_svc(role="test_role"),

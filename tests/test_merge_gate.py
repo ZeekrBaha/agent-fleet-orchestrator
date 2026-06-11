@@ -65,7 +65,7 @@ def repo_factory(tmp_path: Any) -> Any:
 async def evidence_svc(db: DatabaseManager) -> Any:
     from fleet.review.evidence import EvidenceService
 
-    return EvidenceService(db)
+    return EvidenceService(db, gate_require_reviewer=False)
 
 
 # ---------------------------------------------------------------------------
@@ -771,3 +771,130 @@ async def test_merge_lock_concurrent_http(
     # Lock is now keyed by repo_path, so the 409 message includes the repo path.
     conflict_resp = next(r for r in responses if r.status_code == 409)
     assert "merge in progress" in conflict_resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# A2: Evidence trust model — gate_require_reviewer tests (RED)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_worker_self_evidence_gate_fails(db: DatabaseManager) -> None:
+    """Worker-only evidence must not open the merge gate.
+
+    A worker that records its own pytest=pass must not be able to merge.
+    The gate should fail with a 'no reviewer verdict' reason when
+    gate_require_reviewer=True (the default).
+    """
+    from fleet.review.evidence import EvidenceService
+
+    svc = EvidenceService(db)
+    task_id = await svc.create_task(
+        scope="s1", title="t", description="d", owner_agent_id="worker-agent"
+    )
+    await svc.record_evidence(
+        task_id,
+        "pytest",
+        "pass",
+        "all green",
+        recorded_by="worker-agent",
+        recorded_by_role="worker",
+    )
+
+    can_merge, reason = await svc.check_merge_gate(task_id)
+
+    assert not can_merge, "Gate should be closed — only worker self-evidence present"
+    assert "reviewer" in reason.lower(), (
+        f"Expected reason mentioning reviewer, got: {reason!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reviewer_verdict_from_different_agent_opens_gate(
+    db: DatabaseManager,
+) -> None:
+    """Reviewer evidence from a different agent must open the merge gate."""
+    from fleet.review.evidence import EvidenceService
+
+    svc = EvidenceService(db)
+    task_id = await svc.create_task(
+        scope="s2", title="t", description="d", owner_agent_id="worker-agent"
+    )
+    await svc.record_evidence(
+        task_id,
+        "pytest",
+        "pass",
+        "all green",
+        recorded_by="worker-agent",
+        recorded_by_role="worker",
+    )
+    await svc.record_evidence(
+        task_id,
+        "review",
+        "pass",
+        "looks good",
+        recorded_by="reviewer-agent",
+        recorded_by_role="reviewer",
+    )
+
+    can_merge, reason = await svc.check_merge_gate(task_id)
+
+    assert can_merge, (
+        f"Gate should be open — reviewer verdict present. reason={reason!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reviewer_self_review_does_not_open_gate(db: DatabaseManager) -> None:
+    """Reviewer reviewing their own worktree must not satisfy the gate."""
+    from fleet.review.evidence import EvidenceService
+
+    owner = "worker-who-is-also-reviewer"
+    svc = EvidenceService(db)
+    task_id = await svc.create_task(
+        scope="s3", title="t", description="d", owner_agent_id=owner
+    )
+    await svc.record_evidence(
+        task_id,
+        "review",
+        "pass",
+        "self-approved",
+        recorded_by=owner,        # same as task owner → self-review
+        recorded_by_role="reviewer",
+    )
+
+    can_merge, reason = await svc.check_merge_gate(task_id)
+
+    assert not can_merge, (
+        "Gate should be closed — reviewer is the same agent as the task owner"
+    )
+    assert "reviewer" in reason.lower(), (
+        f"Expected reason mentioning reviewer, got: {reason!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate_require_reviewer_false_allows_worker_evidence(
+    db: DatabaseManager,
+) -> None:
+    """With gate_require_reviewer=False, worker-only pass evidence opens the gate."""
+    from fleet.review.evidence import EvidenceService
+
+    svc = EvidenceService(db, gate_require_reviewer=False)
+    task_id = await svc.create_task(
+        scope="s4", title="t", description="d", owner_agent_id="worker-agent"
+    )
+    await svc.record_evidence(
+        task_id,
+        "pytest",
+        "pass",
+        "all green",
+        recorded_by="worker-agent",
+        recorded_by_role="worker",
+    )
+
+    can_merge, reason = await svc.check_merge_gate(task_id)
+
+    assert can_merge, (
+        f"Gate should be open when gate_require_reviewer=False. reason={reason!r}"
+    )

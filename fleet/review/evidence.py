@@ -23,8 +23,14 @@ from fleet.db import DatabaseManager
 class EvidenceService:
     """Manages tasks and their validation evidence records."""
 
-    def __init__(self, db: DatabaseManager) -> None:
+    def __init__(
+        self,
+        db: DatabaseManager,
+        *,
+        gate_require_reviewer: bool = True,
+    ) -> None:
         self._db = db
+        self._gate_require_reviewer = gate_require_reviewer
 
     # ------------------------------------------------------------------
     # Public API
@@ -81,15 +87,17 @@ class EvidenceService:
         output: str = "",
         *,
         recorded_by: str | None = None,
+        recorded_by_role: str | None = None,
     ) -> int:
         """Insert a validation_evidence row. Returns the auto-increment id.
 
         Args:
-            task_id:     Task this evidence belongs to.
-            check_name:  Name of the check (e.g. "pytest", "ruff check .").
-            status:      One of 'pass', 'fail', 'skip'.
-            output:      Command output or summary text.
-            recorded_by: agent_id of the recorder, or None if recorded by a human.
+            task_id:           Task this evidence belongs to.
+            check_name:        Name of the check (e.g. "pytest", "ruff check .").
+            status:            One of 'pass', 'fail', 'skip'.
+            output:            Command output or summary text.
+            recorded_by:       agent_id of the recorder, or None if by a human.
+            recorded_by_role:  Authenticated role of the recorder.
         """
         ts = datetime.now(UTC).isoformat()
 
@@ -97,9 +105,10 @@ class EvidenceService:
             result = conn.execute(
                 text(
                     "INSERT INTO validation_evidence"
-                    " (task_id, check_name, status, output, recorded_by, ts)"
+                    " (task_id, check_name, status, output, recorded_by,"
+                    "  recorded_by_role, ts)"
                     " VALUES (:task_id, :check_name, :status, :output,"
-                    "         :recorded_by, :ts)"
+                    "         :recorded_by, :recorded_by_role, :ts)"
                 ),
                 {
                     "task_id": task_id,
@@ -107,6 +116,7 @@ class EvidenceService:
                     "status": status,
                     "output": output,
                     "recorded_by": recorded_by,
+                    "recorded_by_role": recorded_by_role,
                     "ts": ts,
                 },
             )
@@ -152,7 +162,8 @@ class EvidenceService:
         with self._db.read_connection() as conn:
             rows = conn.execute(
                 text(
-                    "SELECT id, task_id, check_name, status, output, recorded_by, ts"
+                    "SELECT id, task_id, check_name, status, output,"
+                    "  recorded_by, recorded_by_role, ts"
                     " FROM validation_evidence"
                     " WHERE task_id = :task_id"
                     " ORDER BY id ASC"
@@ -168,6 +179,7 @@ class EvidenceService:
                 "status": row.status,
                 "output": row.output,
                 "recorded_by": row.recorded_by,
+                "recorded_by_role": row.recorded_by_role,
                 "ts": row.ts,
             }
             for row in rows
@@ -181,15 +193,15 @@ class EvidenceService:
           - task exists
           - at least one evidence row exists
           - all evidence rows have status='pass' or status='skip' (none 'fail')
+          - when gate_require_reviewer=True: at least one pass evidence row
+            recorded by a 'reviewer' role agent that is NOT the task owner
+            (prevents self-attestation)
 
-        Reviewer verdict logic (simple, no policy configuration required):
-          - If a 'review' check row exists and its status='fail' → gate fails
-            with reason "reviewer verdict: fail" (takes precedence over other
-            failing checks so the message is clear).
-          - If a 'review' check row exists and its status='pass' → counts as
-            passing; other checks are still evaluated normally.
-          - If no 'review' check row exists → reviewer is optional; gate
-            proceeds based on other evidence.
+        Reviewer verdict logic:
+          - If a 'review' check row with status='fail' exists → gate fails
+            with reason "reviewer verdict: fail".
+          - If gate_require_reviewer=True and no qualifying reviewer verdict
+            exists → gate fails with "no reviewer verdict from a different agent".
         """
         task = await self.get_task(task_id)
         if task is None:
@@ -198,6 +210,8 @@ class EvidenceService:
         evidence = await self.list_evidence(task_id)
         if not evidence:
             return False, "No validation evidence recorded; run checks before merging"
+
+        owner_agent_id = str(task.get("owner_agent_id") or "")
 
         # Build a map of check_name -> latest row (highest id wins).
         latest: dict[str, dict[str, object]] = {}
@@ -210,14 +224,29 @@ class EvidenceService:
 
         # Check reviewer verdict first — it produces a distinct failure message.
         review_row = latest.get("review")
-        if review_row is not None:
-            if review_row["status"] == "fail":
-                return False, "reviewer verdict: fail"
+        if review_row is not None and review_row["status"] == "fail":
+            return False, "reviewer verdict: fail"
 
         # Check all remaining checks: fail if any latest row is 'fail'.
         failing = [e for e in latest.values() if e["status"] == "fail"]
         if failing:
             checks = ", ".join(str(e["check_name"]) for e in failing)
             return False, f"{len(failing)} failing check(s): {checks}"
+
+        # Reviewer enforcement: require at least one passing evidence row
+        # recorded by a reviewer who is NOT the task owner.
+        if self._gate_require_reviewer:
+            has_reviewer = any(
+                e.get("recorded_by_role") == "reviewer"
+                and str(e.get("recorded_by") or "") != owner_agent_id
+                and e.get("status") == "pass"
+                for e in evidence
+            )
+            if not has_reviewer:
+                return (
+                    False,
+                    "no reviewer verdict from a different agent"
+                    " (gate_require_reviewer=True)",
+                )
 
         return True, "all checks passed"
