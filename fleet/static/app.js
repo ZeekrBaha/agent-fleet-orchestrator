@@ -30,6 +30,10 @@
   function buildStreamUrl(scope, afterId) {
     var url = '/api/events/stream?scope=' + encodeURIComponent(scope);
     if (afterId) url += '&after_id=' + encodeURIComponent(afterId);
+    // EventSource cannot send custom headers, so pass auth token as query param.
+    var tokenMeta = document.querySelector('meta[name="api-token"]');
+    var token = tokenMeta ? tokenMeta.content : '';
+    if (token) url += '&token=' + encodeURIComponent(token);
     return url;
   }
 

@@ -83,7 +83,9 @@ async def approvals_app_no_auth_override(
 ) -> FastAPI:
     """Build approvals app WITHOUT overriding require_token."""
     from fleet.api.approvals import router, set_approval_service
+    from fleet.api.auth import get_settings
     from fleet.approvals.service import ApprovalService
+    from fleet.config import Settings
 
     approval_svc = ApprovalService(db=db, event_service=event_service)
     await approval_svc.load_pending()
@@ -91,7 +93,10 @@ async def approvals_app_no_auth_override(
 
     app = FastAPI()
     app.include_router(router)
-    # Intentionally NOT overriding require_token — auth must be enforced.
+    # Use a real token so the loopback-bypass (empty token) does not apply.
+    # The test verifies that a request WITHOUT credentials is rejected.
+    _sentinel = Settings(api_token="test-sentinel-token")
+    app.dependency_overrides[get_settings] = lambda: _sentinel
     return app
 
 
@@ -131,7 +136,9 @@ async def dashboard_app_no_auth_override(
 
     from fastapi.templating import Jinja2Templates
 
+    from fleet.api.auth import get_settings
     from fleet.approvals.service import ApprovalService
+    from fleet.config import Settings
     from fleet.dashboard.router import (
         router,
         set_approval_service,
@@ -156,7 +163,10 @@ async def dashboard_app_no_auth_override(
 
     app = FastAPI()
     app.include_router(router)
-    # Intentionally NOT overriding require_token.
+    # Use a real token so the loopback-bypass (empty token) does not apply.
+    # The test verifies that a request WITHOUT credentials is rejected.
+    _sentinel = Settings(api_token="test-sentinel-token")
+    app.dependency_overrides[get_settings] = lambda: _sentinel
     return app
 
 

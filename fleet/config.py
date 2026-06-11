@@ -38,6 +38,9 @@ class Settings(BaseSettings):
         Rules:
         - A non-local bind with no API token means the server is reachable from
           the network with no authentication, which is forbidden.
+
+        Note: When ``FLEET_API_TOKEN`` is empty and binding to loopback,
+        authentication is bypassed for loopback clients (local dev mode).
         """
         if not self.api_token.strip() and not self.is_local_bind():
             raise ConfigurationError(

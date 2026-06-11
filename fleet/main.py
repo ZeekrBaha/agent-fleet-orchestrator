@@ -84,6 +84,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     templates_dir = fleet_pkg / "templates"
     static_dir = fleet_pkg / "static"
     templates = Jinja2Templates(directory=str(templates_dir))
+    # Expose api_token to all templates so app.js can pass it to EventSource.
+    templates.env.globals["api_token"] = settings.api_token
 
     # Wire dependency injection for module-level set_ functions.
     set_db(manager)
