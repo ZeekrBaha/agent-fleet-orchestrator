@@ -46,12 +46,17 @@ from fleet.toolserver.relay import FleetRelay
 
 mcp = FastMCP("fleet-toolserver")
 
+_relay: FleetRelay | None = None
+
 
 def _get_relay() -> FleetRelay:
-    """Construct (or return cached) relay from env vars."""
-    token = os.environ.get("FLEET_API_TOKEN", "")
-    base_url = os.environ.get("FLEET_BASE_URL", "http://127.0.0.1:8000")
-    return FleetRelay(base_url=base_url, token=token)
+    """Return the module-level relay singleton, creating it on first call."""
+    global _relay
+    if _relay is None:
+        token = os.environ.get("FLEET_API_TOKEN", "")
+        base_url = os.environ.get("FLEET_BASE_URL", "http://127.0.0.1:8000")
+        _relay = FleetRelay(base_url=base_url, token=token)
+    return _relay
 
 
 # ---------------------------------------------------------------------------

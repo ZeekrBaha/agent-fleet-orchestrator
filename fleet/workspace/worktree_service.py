@@ -221,15 +221,18 @@ class WorktreeService:
             worktree_path = repo_path.parent / "fleet-worktrees" / branch
             worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
+            base_branch = repo.default_branch
             try:
-                await asyncio.to_thread(worktree_add, repo.path, worktree_path, branch)
+                await asyncio.to_thread(
+                    worktree_add, repo.path, worktree_path, branch,
+                    base_branch=base_branch,
+                )
             except GitError as exc:
                 raise WorktreeError(f"git worktree add failed: {exc}") from exc
 
             worktree_id = str(uuid.uuid4())
             now = datetime.now(UTC).isoformat()
             owned_json = json.dumps(owned_paths)
-            base_branch = repo.default_branch
 
             def _write(conn: Connection) -> None:
                 conn.execute(
