@@ -20,7 +20,6 @@ import pathlib
 import sqlite3
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 from sqlalchemy import Connection, create_engine, event
@@ -74,7 +73,8 @@ def _apply_pragmas(dbapi_conn: Any, _connection_record: Any) -> None:  # noqa: A
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    from fleet.util.time import utcnow_iso  # noqa: PLC0415
+    return utcnow_iso()
 
 
 def run_migrations(

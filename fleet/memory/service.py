@@ -16,12 +16,12 @@ Memory writes emit no events — event emission is the caller's responsibility.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 
 from sqlalchemy import Connection, text
 
 from fleet.db import DatabaseManager
 from fleet.models import MemoryKind, MemoryRecord
+from fleet.util.time import utcnow_iso
 
 
 class MemoryService:
@@ -54,7 +54,7 @@ class MemoryService:
         Returns:
             The integer id of the newly inserted row.
         """
-        ts = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        ts = utcnow_iso()
         metadata_json = json.dumps(metadata or {})
 
         def _write(conn: Connection) -> int:

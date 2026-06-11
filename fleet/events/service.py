@@ -9,13 +9,13 @@ Public API:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Connection, text
 
 from fleet.db import DatabaseManager
 from fleet.models import Event
+from fleet.util.time import utcnow_iso
 
 if TYPE_CHECKING:
     from fleet.events.sse import SSEHub
@@ -46,7 +46,7 @@ class EventService:
         Publishes to SSEHub after the commit so subscribers always see
         already-committed data.
         """
-        ts = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        ts = utcnow_iso()
         payload_json = json.dumps(payload or {})
 
         def _write(conn: Connection) -> int:

@@ -12,7 +12,9 @@ Creates a deterministic dataset in a given SQLite DB file:
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from fleet.util.time import utcnow_iso
 
 
 def seed_test_db(db_path: str) -> None:
@@ -26,15 +28,16 @@ def seed_test_db(db_path: str) -> None:
 
 
 def _now(offset_seconds: int = 0) -> str:
-    from datetime import timedelta
+    if offset_seconds == 0:
+        return utcnow_iso()
     ts = datetime.now(UTC) + timedelta(seconds=offset_seconds)
-    return ts.isoformat().replace("+00:00", "Z")
+    return ts.isoformat()
 
 
 # Fixed timestamps for determinism
-_TS_BASE = "2026-06-10T10:00:00.000Z"
-_TS_OLD = "2026-06-09T08:00:00.000Z"
-_TS_RECENT = "2026-06-10T09:55:00.000Z"
+_TS_BASE = "2026-06-10T10:00:00.000000+00:00"
+_TS_OLD = "2026-06-09T08:00:00.000000+00:00"
+_TS_RECENT = "2026-06-10T09:55:00.000000+00:00"
 
 
 def _seed(conn: sqlite3.Connection) -> None:

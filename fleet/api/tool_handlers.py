@@ -83,9 +83,7 @@ async def _handle_spawn_worker(
         recent_events = await event_svc.query(
             inp.scope, type_filter="state_change", limit=500
         )
-        cutoff = (
-            datetime.now(UTC) - timedelta(minutes=1)
-        ).isoformat().replace("+00:00", "Z")
+        cutoff = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
         spawns_last_minute = sum(
             1
             for e in recent_events
