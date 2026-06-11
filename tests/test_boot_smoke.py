@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -36,7 +36,7 @@ _TOKEN = "test-smoke-token"
 
 
 @pytest_asyncio.fixture
-async def app_client(tmp_path: SimpleNamespace) -> AsyncIterator[AsyncClient]:
+async def app_client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
     """Spin up the real Fleet app via its lifespan and yield an HTTP client.
 
     Strategy
@@ -50,7 +50,7 @@ async def app_client(tmp_path: SimpleNamespace) -> AsyncIterator[AsyncClient]:
     * Pass the real ``app`` object to ``ASGITransport``; the lifespan has
       already wired all DI singletons so requests are fully handled.
     """
-    db_path = str(tmp_path / "smoke.db")  # type: ignore[operator]
+    db_path = str(tmp_path / "smoke.db")
     old_db = os.environ.get("FLEET_DB_PATH")
     old_token = os.environ.get("FLEET_API_TOKEN")
 
@@ -248,7 +248,7 @@ async def test_dashboard_requires_auth(app_client: AsyncClient) -> None:
     * Wrong / missing token → 401
     * Correct token → 200 (HTML response rendered)
     """
-    from fleet.main import app  # re-import to confirm same app object
+    from fleet.main import app
 
     # Request WITHOUT the correct auth token — use a separate client
     async with AsyncClient(
