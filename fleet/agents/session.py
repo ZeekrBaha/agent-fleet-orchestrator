@@ -238,6 +238,15 @@ class AgentSession:
         """Execute one agent turn: send message, stream events, finalize."""
         assert self._session_ref is not None
 
+        # Pre-turn budget gate: if already over limit, pause without calling API.
+        pre_action = await self._budget.check_pre_turn()
+        if pre_action == BudgetAction.PAUSE:
+            await self._set_status("paused_budget")
+            await self._wait_for_resume()
+            if self._interrupt_event.is_set():
+                await self._set_status("idle")
+            return
+
         try:
             await self._backend.send(self._session_ref, message)
         except Exception as exc:  # noqa: BLE001 — backend.send can raise any provider error; map to failed state

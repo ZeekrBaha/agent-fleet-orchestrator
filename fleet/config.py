@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     secret_patterns: list[str] = ["FLEET_API_TOKEN"]
     compaction_threshold: int = 80_000
     gate_require_reviewer: bool = True
+    scope_budget_hard_usd: float | None = None
 
     def is_local_bind(self) -> bool:
         """Return True iff the host is a loopback address."""

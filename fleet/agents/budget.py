@@ -40,15 +40,58 @@ class BudgetEnforcer:
         scope: str,
         db: DatabaseManager,
         event_service: EventService,
+        scope_budget_hard_usd: float | None = None,
     ) -> None:
         self._agent_id = agent_id
         self._scope = scope
         self._db = db
         self._event_service = event_service
+        self._scope_budget_hard_usd = scope_budget_hard_usd
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    async def check_pre_turn(self) -> BudgetAction:
+        """Check budget BEFORE starting a turn — no cost accumulation.
+
+        Returns PAUSE if the agent is already at its hard limit, or if the
+        per-scope aggregate cap is exceeded.  Returns OK otherwise.
+        """
+        with self._db.read_connection() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT cost_usd, budget_hard_usd FROM agents WHERE id = :id"
+                ),
+                {"id": self._agent_id},
+            ).fetchone()
+
+        if row is None:
+            return BudgetAction.OK
+
+        cost_usd: float = row.cost_usd or 0.0
+        budget_hard: float | None = row.budget_hard_usd
+
+        if budget_hard is not None and cost_usd >= budget_hard:
+            return BudgetAction.PAUSE
+
+        if self._scope_budget_hard_usd is not None:
+            with self._db.read_connection() as conn:
+                scope_row = conn.execute(
+                    text(
+                        "SELECT COALESCE(SUM(cost_usd), 0.0)"
+                        " FROM agents WHERE scope = :scope"
+                    ),
+                    {"scope": self._scope},
+                ).fetchone()
+            scope_total: float = scope_row[0] if scope_row else 0.0
+            if scope_total >= self._scope_budget_hard_usd:
+                await self._emit_budget_alert(
+                    "scope", scope_total, self._scope_budget_hard_usd
+                )
+                return BudgetAction.PAUSE
+
+        return BudgetAction.OK
 
     async def record_turn_cost(self, turn_end: TurnEnd) -> BudgetAction:
         """Accumulate turn cost and enforce budget limits.
