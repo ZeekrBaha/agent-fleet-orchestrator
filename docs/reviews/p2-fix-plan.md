@@ -8,6 +8,8 @@ items and P3 cleanup from `docs/reviews/pr1-review-fixes.md`.
 **Completed on `fleet/phase-1-scaffold`:**
 - B1 (P2-4) Real migration framework — commit `db383ad` — 272 tests green
 - A1 (P2-1) Per-agent identity binding — commit `d103d59` — 280 tests green
+- A3 (P2-3) Prompt-injection hardening — commit `50b3dea` — 284 tests green
+- A2 (P2-2) Evidence trust model — commit `e3fef88` — 288 tests green
 
 **Branch strategy:** merge `fleet/phase-1-scaffold` first. Then one branch per phase
 below (`fleet/p2-security`, `fleet/p2-infra`, `fleet/p3-cleanup`). Do not mix phases
@@ -70,7 +72,7 @@ orchestrator. Identity is asserted, never authenticated.
 **Acceptance:** role spoofing impossible by construction; `tests/test_security_p0.py`
 role tests still pass; new `tests/test_identity_binding.py` green.
 
-### A2 (P2-2). Evidence trust model
+### A2 (P2-2). Evidence trust model — DONE `e3fef88`
 
 **Problem.** Merge gate passes on ≥1 evidence row, and the worker records its own
 evidence (`tool_handlers.py:223-262`). A worker can write `pytest=pass` for itself
@@ -97,7 +99,7 @@ and merge unverified code. The gate is self-attestation theater.
 **Touches:** `fleet/review/merge.py`, `fleet/api/tool_handlers.py`,
 `migrations/0003_evidence_attribution.sql`, manifest YAML.
 
-### A3 (P2-3). Prompt-injection hardening
+### A3 (P2-3). Prompt-injection hardening — DONE `50b3dea`
 
 **Problem.** `fleet/agents/promptbuild.py:222` concatenates agent-written
 memory/team-state into the system prompt using `---` separators an agent can spoof.
