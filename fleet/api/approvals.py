@@ -60,6 +60,7 @@ class DecideRequest(BaseModel):
 @router.get("", response_model=list[ApprovalRecord])
 async def list_pending_approvals(
     scope: str,
+    _auth: Annotated[None, Depends(require_token)],
 ) -> list[ApprovalRecord]:
     """List all pending approvals for the given scope."""
     svc = get_approval_service()

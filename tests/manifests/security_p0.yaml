@@ -1,0 +1,28 @@
+version: "1"
+
+# Security P0 test manifest.
+# Used in test_security_p0.py to test role escalation checks.
+# Gives both worker and orchestrator access to spawn_worker so the
+# policy layer passes through and the new role-ACL check in
+# _handle_spawn_worker is exercised.
+roles:
+  orchestrator:
+    allowed_tools:
+      - spawn_worker
+    spawn_rate:
+      max_live_workers: 100
+      max_spawns_per_minute: 100
+
+  worker:
+    allowed_tools:
+      - spawn_worker
+    spawn_rate:
+      max_live_workers: 100
+      max_spawns_per_minute: 100
+
+  reviewer:
+    allowed_tools:
+      - spawn_worker
+    spawn_rate:
+      max_live_workers: 100
+      max_spawns_per_minute: 100

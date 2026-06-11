@@ -16,16 +16,17 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from fleet.api.auth import require_token
 from fleet.approvals.service import ApprovalService
 from fleet.db import DatabaseManager
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_token)])
 
 # Module-level singletons set during app startup
 _db: DatabaseManager | None = None

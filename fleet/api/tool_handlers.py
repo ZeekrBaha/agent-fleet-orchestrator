@@ -78,6 +78,22 @@ async def _handle_spawn_worker(
         spawns_last_minute=spawns_last_minute,
     )
 
+    # Identity binding gap: agent_id is caller-supplied; per-agent token binding is P2-1
+    # Role escalation check: validate requested role against caller's allowed spawn roles.
+    # None means unrestricted (orchestrator may spawn any role).
+    _SPAWN_ROLE_ALLOWLIST: dict[str, frozenset[str] | None] = {
+        "orchestrator": None,  # orchestrator can spawn any role
+        "worker": frozenset({"worker"}),
+        "reviewer": frozenset({"worker"}),
+    }
+    caller_role = calling_agent.role if calling_agent is not None else "unknown"
+    allowed_spawn_roles = _SPAWN_ROLE_ALLOWLIST.get(caller_role, frozenset({"worker"}))
+    if allowed_spawn_roles is not None and inp.role not in allowed_spawn_roles:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Role escalation denied: caller role '{caller_role}' cannot spawn role '{inp.role}'",
+        )
+
     record = await agent_svc.create_agent(
         scope=inp.scope,
         name=inp.name,
