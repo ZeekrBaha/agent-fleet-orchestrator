@@ -25,6 +25,7 @@ from mcp.server.fastmcp import FastMCP
 
 from fleet.api.tool_schemas import (
     CheckConflictInput,
+    ExecuteMergeInput,
     GetAgentLogsInput,
     ListAgentsInput,
     MemoryWriteInput,
@@ -67,6 +68,7 @@ async def spawn_worker(
     role: str,
     task_description: str,
     model: str = "claude-sonnet-4-6",
+    task_id: str | None = None,
     repository_id: str | None = None,
     owned_paths: list[str] | None = None,
     budget_soft_usd: float | None = None,
@@ -80,6 +82,7 @@ async def spawn_worker(
         role=role,
         task_description=task_description,
         model=model,
+        task_id=task_id,
         repository_id=repository_id,
         owned_paths=owned_paths or [],
         budget_soft_usd=budget_soft_usd,
@@ -295,6 +298,22 @@ async def memory_write(
     )
     relay = _get_relay()
     return await relay.call("memory_write", agent_id, scope, inp.model_dump())
+
+
+@mcp.tool()
+async def execute_merge(
+    agent_id: str,
+    scope: str,
+    worktree_id: str,
+) -> dict[str, object]:
+    """Execute a squash merge of a worktree into the target branch."""
+    inp = ExecuteMergeInput(
+        agent_id=agent_id,
+        scope=scope,
+        worktree_id=worktree_id,
+    )
+    relay = _get_relay()
+    return await relay.call("execute_merge", agent_id, scope, inp.model_dump())
 
 
 # ---------------------------------------------------------------------------

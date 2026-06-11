@@ -35,6 +35,7 @@ from fleet.api.tool_schemas import (
     UpdateProgressInput,
     WorkerWipInput,
 )
+from fleet.policy.service import PolicyDenied
 from fleet.workspace.worktree_service import DirtyRepoError, OverlapError, WorktreeError
 
 # Role escalation policy: maps caller role → frozenset of roles it may spawn.
@@ -102,6 +103,13 @@ async def _handle_spawn_worker(
                 f"spawn role '{inp.role}'"
             ),
         )
+
+    # Secret path guard: block any owned_path that matches a secret glob pattern.
+    for path in inp.owned_paths:
+        try:
+            policy_svc.check_secret_path(path)
+        except PolicyDenied as exc:
+            raise HTTPException(status_code=403, detail=exc.reason) from exc
 
     record = await agent_svc.create_agent(
         scope=inp.scope,
