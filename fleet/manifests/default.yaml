@@ -12,6 +12,7 @@ roles:
       - memory_write
       - update_progress
       - report_issue
+      - execute_merge
     spawn_rate:
       max_live_workers: 10
       max_spawns_per_minute: 5
@@ -30,10 +31,11 @@ roles:
 
   reviewer:
     allowed_tools:
-      - get_agent_logs
+      - record_validation
       - worker_wip
       - check_conflict
-      - record_validation
+      - get_agent_logs
+      - send_message
       - update_progress
       - report_issue
       - memory_write

@@ -135,20 +135,27 @@ def assemble_prompt(
     memory_snippets: list[str] | None = None,
     tool_descriptions: list[str] | None = None,
     workspace_context: str = "",
+    prior_context: str = "",
 ) -> AssembledPrompt:
-    """Build the 7-layer system prompt.
+    """Build the layered system prompt.
 
     Layer order:
-        0. platform   — fleet/prompts/platform.md          (≤ 800 tokens)
-        1. workspace  — fleet/prompts/workspace.md          (≤ 400 tokens)
-        2. role       — fleet/prompts/roles/<role>.md       (≤ 1200 tokens)
-        3. task       — task_prompt (no cap)
-        4. team_state — generated snapshot (≤ 600 tokens)
-        5. memory     — memory_snippets joined (≤ 800 tokens)
-        6. tools      — tool_descriptions joined (no cap)
+        0. platform      — fleet/prompts/platform.md          (≤ 800 tokens)
+        1. workspace     — fleet/prompts/workspace.md          (≤ 400 tokens)
+        2. role          — fleet/prompts/roles/<role>.md       (≤ 1200 tokens)
+        3. prior_context — prior compaction summary (no cap; omitted if empty)
+        4. task          — task_prompt (no cap)
+        5. team_state    — generated snapshot (≤ 600 tokens)
+        6. memory        — memory_snippets joined (≤ 800 tokens)
+        7. tools         — tool_descriptions joined (no cap)
+
+    Args:
+        prior_context: Optional summary from a previous compaction cycle.
+            When non-empty, injected after the role layer so the model resumes
+            with its prior summary rather than starting from a blank slate.
 
     Returns:
-        AssembledPrompt with all 7 layers, system_prompt string, and total_tokens.
+        AssembledPrompt with all layers, system_prompt string, and total_tokens.
 
     Raises:
         MissingRolePromptError: if the role prompt file does not exist (ADR-005).
@@ -175,17 +182,24 @@ def assemble_prompt(
     role_raw = load_role_prompt(role)  # raises MissingRolePromptError if absent
     role_content = truncate_to_budget(role_raw, TOKEN_BUDGETS["role"])
 
-    # -- Layer 3: task prompt (no cap) -------------------------------------------
+    # -- Layer 3: prior context from compaction (no cap; empty → omitted) --------
+    prior_content = (
+        "## Prior context (from compaction)\n\n" + prior_context
+        if prior_context
+        else ""
+    )
+
+    # -- Layer 4: task prompt (no cap) -------------------------------------------
     task_content = task_prompt  # explicitly no truncation
 
-    # -- Layer 4: team state (≤ 600 tokens) -------------------------------------
+    # -- Layer 5: team state (≤ 600 tokens) -------------------------------------
     team_content = truncate_to_budget(team_state, TOKEN_BUDGETS["team_state"])
 
-    # -- Layer 5: memory snippets (≤ 800 tokens) ---------------------------------
+    # -- Layer 6: memory snippets (≤ 800 tokens) ---------------------------------
     memory_raw = "\n".join(memory_snippets) if memory_snippets else ""
     memory_content = truncate_to_budget(memory_raw, TOKEN_BUDGETS["memory"])
 
-    # -- Layer 6: tool descriptions (no cap) ------------------------------------
+    # -- Layer 7: tool descriptions (no cap) ------------------------------------
     tools_content = "\n".join(tool_descriptions) if tool_descriptions else ""
 
     # -- Build PromptLayer objects -----------------------------------------------
@@ -193,13 +207,14 @@ def assemble_prompt(
         return PromptLayer(name, content, estimate_tokens(content))
 
     layers: list[PromptLayer] = [
-        _layer("platform",   platform_content),
-        _layer("workspace",  workspace_content),
-        _layer("role",       role_content),
-        _layer("task",       task_content),
-        _layer("team_state", team_content),
-        _layer("memory",     memory_content),
-        _layer("tools",      tools_content),
+        _layer("platform",      platform_content),
+        _layer("workspace",     workspace_content),
+        _layer("role",          role_content),
+        _layer("prior_context", prior_content),
+        _layer("task",          task_content),
+        _layer("team_state",    team_content),
+        _layer("memory",        memory_content),
+        _layer("tools",         tools_content),
     ]
 
     # -- Assemble system prompt (skip empty layers to avoid stray separators) ----

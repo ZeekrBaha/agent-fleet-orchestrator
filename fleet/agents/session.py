@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Connection, text
 
@@ -36,9 +37,17 @@ from fleet.agents.backends.protocol import (
 )
 from fleet.agents.budget import BudgetAction, BudgetEnforcer
 from fleet.agents.inbox import InboxService
+from fleet.agents.promptbuild import assemble_prompt
+from fleet.approvals.service import ApprovalTimeoutError
 from fleet.db import DatabaseManager
 from fleet.events.service import EventService
 from fleet.models import AgentStatus
+
+if TYPE_CHECKING:
+    from fleet.approvals.service import ApprovalService
+    from fleet.memory.service import MemoryService
+
+_DEFAULT_COMPACTION_THRESHOLD = 80_000
 
 
 class AgentSession:
@@ -56,6 +65,12 @@ class AgentSession:
         *,
         turn_timeout_s: float = 300.0,
         idle_hibernate_s: float = 3600.0,
+        memory_svc: MemoryService | None = None,
+        compaction_threshold: int = _DEFAULT_COMPACTION_THRESHOLD,
+        prior_context: str = "",
+        role: str = "worker",
+        task_description: str = "",
+        approval_svc: ApprovalService | None = None,
     ) -> None:
         self._agent_id = agent_id
         self._backend = backend
@@ -73,6 +88,25 @@ class AgentSession:
         self._task: asyncio.Task[None] | None = None
 
         self._budget = budget
+        self._approval_svc = approval_svc
+        self._memory_svc = memory_svc
+        self._compaction_threshold = compaction_threshold
+        self._prior_context = prior_context
+        # Cumulative token counter across turns; reset after each compaction
+        self._cumulative_tokens: int = 0
+        # Conversation history accumulated across turns for compaction summarization
+        self._conversation_history: list[dict[str, object]] = []
+        # Assembled system prompt (built from role + prior_context); stored so
+        # tests and future real backends can inspect/use the full prompt text.
+        try:
+            assembled = assemble_prompt(
+                role=role,
+                task_prompt=task_description,
+                prior_context=prior_context,
+            )
+            self._system_prompt: str = assembled.system_prompt
+        except Exception:  # noqa: BLE001 — if prompt assembly fails, degrade gracefully
+            self._system_prompt = prior_context
 
     @property
     def status(self) -> AgentStatus:
@@ -218,6 +252,38 @@ class AgentSession:
 
             await self._drain_events(message, inbox_id, "", allow_retry=False)
 
+    async def _compact(self, tokens_before: int) -> None:
+        """Summarise the current conversation and write a compaction memory row.
+
+        Called by _drain_events when cumulative tokens exceed the threshold.
+        Emits a state_change("context_compacted") event with tokens_before and
+        memory_id in the payload.
+        """
+        assert self._memory_svc is not None
+
+        # Pass the accumulated conversation history so the backend can produce
+        # a meaningful summary rather than summarizing an empty list.
+        messages = list(self._conversation_history)
+        summary = await self._backend.summarize(messages)
+        # Clear history after compaction so it doesn't grow unbounded.
+        self._conversation_history.clear()
+
+        memory_id = await self._memory_svc.write(
+            agent_id=self._agent_id,
+            scope=self._scope,
+            kind="compaction",
+            content=summary,
+            metadata={"tokens_before": tokens_before},
+        )
+
+        await self._event_service.append(
+            self._scope,
+            "state_change",
+            "context_compacted",
+            agent_id=self._agent_id,
+            payload={"tokens_before": tokens_before, "memory_id": memory_id},
+        )
+
     async def _drain_events(
         self,
         message: str,
@@ -238,6 +304,12 @@ class AgentSession:
             "failed"      — Non-retryable error; message failed, state failed.
         """
         assert self._session_ref is not None
+
+        # Record the user turn in conversation history for compaction summaries.
+        if message:
+            self._conversation_history.append(
+                {"role": "user", "content": message}
+            )
 
         async for event in self._backend.events(self._session_ref):
             # Check for interrupt signal between events
@@ -277,6 +349,12 @@ class AgentSession:
                 )
 
             elif isinstance(event, TurnEnd):
+                # Record the assistant turn in conversation history.
+                if accumulated_text:
+                    self._conversation_history.append(
+                        {"role": "assistant", "content": accumulated_text}
+                    )
+
                 # Emit agent_message with accumulated text
                 await self._event_service.append(
                     self._scope,
@@ -293,15 +371,67 @@ class AgentSession:
                 )
                 await self._inbox.mark_delivered(inbox_id)
 
+                # Accumulate tokens and trigger compaction if threshold exceeded.
+                self._cumulative_tokens += event.input_tokens + event.output_tokens
+                if (
+                    self._memory_svc is not None
+                    and self._cumulative_tokens >= self._compaction_threshold
+                ):
+                    await self._compact(tokens_before=self._cumulative_tokens)
+                    self._cumulative_tokens = 0
+
                 # Budget enforcement: check limits after accumulating this turn's cost.
                 budget_action = await self._budget.record_turn_cost(event)
                 if budget_action == BudgetAction.PAUSE:
-                    # Hard budget exceeded — pause until an approval is granted.
+                    # Hard budget exceeded — request approval and pause until decided.
                     await self._set_status("paused_budget")
-                    await self._wait_for_resume()
-                    if self._interrupt_event.is_set():
-                        await self._set_status("idle")
-                        return "interrupted"
+
+                    if self._approval_svc is not None:
+                        approval_id = await self._approval_svc.request(
+                            self._scope,
+                            self._agent_id,
+                            "budget_exceeded",
+                            f"Agent {self._agent_id} exceeded hard budget limit",
+                        )
+                        try:
+                            decision = await self._approval_svc.wait_for_decision(
+                                approval_id
+                            )
+                        except asyncio.CancelledError:
+                            # Session is being shut down — propagate.
+                            raise
+                        except ApprovalTimeoutError:
+                            # Timed out — stay paused; resume() resumes later
+                            await self._set_status("paused_budget")
+                            return "interrupted"
+                        if self._interrupt_event.is_set():
+                            await self._set_status("idle")
+                            return "interrupted"
+                        if decision == "approve":
+                            await self._set_status("running")
+                            await self._event_service.append(
+                                self._scope,
+                                "state_change",
+                                f"Agent {self._agent_id} budget approved",
+                                agent_id=self._agent_id,
+                                payload={"status": "budget_approved"},
+                            )
+                        else:
+                            await self._event_service.append(
+                                self._scope,
+                                "state_change",
+                                f"Agent {self._agent_id} budget denied",
+                                agent_id=self._agent_id,
+                                payload={"status": "budget_denied"},
+                            )
+                            # Stay paused; session will not proceed to idle.
+                            return "done"
+                    else:
+                        # No approval service — fall back to bare event-based wait.
+                        await self._wait_for_resume()
+                        if self._interrupt_event.is_set():
+                            await self._set_status("idle")
+                            return "interrupted"
 
                 await self._set_status("idle")
                 return "done"

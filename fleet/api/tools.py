@@ -13,23 +13,39 @@ Each handler:
 
 Dependency injection follows the same module-level state-holder pattern used by
 fleet/api/agents.py and fleet/api/workspaces.py.
+
+Handler implementations live in ``fleet/api/tool_handlers.py``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
-import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import Connection, text
 
 from fleet.api.auth import require_token
+from fleet.api.tool_handlers import (
+    _handle_check_conflict,
+    _handle_execute_merge,
+    _handle_get_agent_logs,
+    _handle_list_agents,
+    _handle_memory_write,
+    _handle_record_validation,
+    _handle_report_issue,
+    _handle_request_approval,
+    _handle_send_message,
+    _handle_spawn_worker,
+    _handle_stop_agent,
+    _handle_update_progress,
+    _handle_worker_wip,
+)
 from fleet.api.tool_schemas import (
     CheckConflictInput,
+    ExecuteMergeInput,
     GetAgentLogsInput,
     ListAgentsInput,
     MemoryWriteInput,
@@ -63,6 +79,7 @@ def set_tool_services(
     worktree_svc: Any,
     db: Any,
     evidence_svc: Any = None,
+    merge_svc: Any = None,
 ) -> None:
     """Wire service instances into this module (called at application startup).
 
@@ -77,6 +94,7 @@ def set_tool_services(
         "worktree_svc": worktree_svc,
         "db": db,
         "evidence_svc": evidence_svc,
+        "merge_svc": merge_svc,
     }
     _policy_svc = None
 
@@ -116,8 +134,8 @@ _SECRET_KEY_PATTERN = re.compile(
 def _scrub_payload(payload: dict[str, object]) -> dict[str, object]:
     """Return a copy of payload with secret-looking values replaced by '[REDACTED]'.
 
-    # TODO(security): only key-name scrubbing implemented; value-pattern scrubbing
-    # (e.g. bearer tokens in message bodies) is out of scope for MVP.
+    Only key-name scrubbing is implemented; value-pattern scrubbing
+    (e.g. bearer tokens in message bodies) is out of scope for MVP.
     """
     scrubbed: dict[str, object] = {}
     for k, v in payload.items():
@@ -182,293 +200,6 @@ async def _emit_tool_error(
 
 
 # ---------------------------------------------------------------------------
-# Per-tool handlers
-# ---------------------------------------------------------------------------
-
-
-async def _handle_spawn_worker(
-    inp: SpawnWorkerInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    from fleet.agents.backends.mock import MockBackend
-
-    agent_svc = svcs["agent_svc"]
-    event_svc = svcs["event_svc"]
-    policy_svc = svcs["_policy_svc"]
-    calling_agent = svcs["_calling_agent"]
-
-    # Count live workers in this scope (for spawn rate check)
-    live_workers = await agent_svc.list_agents(scope=inp.scope)
-    live_count = sum(
-        1 for a in live_workers if a.status not in ("archived", "failed")
-    )
-
-    # Count spawns in last 60 seconds from state_change events with action=spawn
-    recent_events = await event_svc.query(
-        inp.scope, type_filter="state_change", limit=500
-    )
-    cutoff = (
-        datetime.now(UTC) - timedelta(minutes=1)
-    ).isoformat().replace("+00:00", "Z")
-    spawns_last_minute = sum(
-        1
-        for e in recent_events
-        if e.ts >= cutoff and e.payload.get("action") == "spawn"
-    )
-
-    policy_svc.check_spawn_rate(
-        scope=inp.scope,
-        role=calling_agent.role,
-        current_live_workers=live_count,
-        spawns_last_minute=spawns_last_minute,
-    )
-
-    record = await agent_svc.create_agent(
-        scope=inp.scope,
-        name=inp.name,
-        role=inp.role,
-        backend=MockBackend(transcript=[]),
-        model=inp.model,
-        parent_id=inp.agent_id,
-        repository_id=inp.repository_id,
-        budget_soft_usd=inp.budget_soft_usd,
-        budget_hard_usd=inp.budget_hard_usd,
-        backend_name="mock",
-    )
-    return {"agent_id": record.id, "name": record.name, "status": record.status}
-
-
-async def _handle_send_message(
-    inp: SendMessageInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    agent_svc = svcs["agent_svc"]
-    inbox_id = await agent_svc.send_message(
-        inp.target_agent_id, inp.agent_id, inp.message
-    )
-    return {"inbox_id": inbox_id}
-
-
-async def _handle_list_agents(
-    inp: ListAgentsInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    agent_svc = svcs["agent_svc"]
-    agents = await agent_svc.list_agents(inp.scope)
-    return {
-        "agents": [
-            {"id": a.id, "name": a.name, "status": a.status} for a in agents
-        ]
-    }
-
-
-async def _handle_get_agent_logs(
-    inp: GetAgentLogsInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    event_svc = svcs["event_svc"]
-    events = await event_svc.query(
-        inp.scope, agent_id=inp.target_agent_id, limit=inp.limit
-    )
-    return {
-        "events": [
-            {"id": e.id, "type": e.type, "summary": e.summary, "ts": e.ts}
-            for e in events
-        ]
-    }
-
-
-async def _handle_stop_agent(
-    inp: StopAgentInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    agent_svc = svcs["agent_svc"]
-    await agent_svc.archive_agent(inp.target_agent_id)
-    return {"status": "archived", "agent_id": inp.target_agent_id}
-
-
-async def _handle_worker_wip(
-    inp: WorkerWipInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    """Look up the agent's worktree_id, then return its WIP report."""
-    agent_svc = svcs["agent_svc"]
-    worktree_svc = svcs["worktree_svc"]
-
-    record = await agent_svc.get_agent(inp.target_agent_id)
-    if record is None or record.worktree_id is None:
-        return {"error": f"Agent {inp.target_agent_id!r} has no worktree"}
-
-    wip: dict[str, object] = await worktree_svc.get_wip_report(record.worktree_id)
-    return wip
-
-
-async def _handle_check_conflict(
-    inp: CheckConflictInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    """Simulate merging the worktree branch into target_branch and report conflicts."""
-    from fleet.workspace.gitops import simulate_merge
-
-    db = svcs["db"]
-
-    # Look up the worktree record directly via DB to get repo path and branch.
-    with db.read_connection() as conn:
-        row = conn.execute(
-            text(
-                "SELECT w.branch, r.path AS repo_path"
-                " FROM worktrees w"
-                " JOIN repositories r ON w.repository_id = r.id"
-                " WHERE w.id = :id"
-            ),
-            {"id": inp.worktree_id},
-        ).fetchone()
-
-    if row is None:
-        raise ValueError(f"Worktree not found: {inp.worktree_id!r}")
-
-    has_conflict, conflict_summary = simulate_merge(
-        row.repo_path, row.branch, inp.target_branch
-    )
-    return {
-        "worktree_id": inp.worktree_id,
-        "has_conflict": has_conflict,
-        "conflict_summary": conflict_summary,
-    }
-
-
-async def _handle_record_validation(
-    inp: RecordValidationInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    # Prefer the EvidenceService when wired (Task 5.2); fall back to direct DB
-    # write for backward compatibility with test setups that omit evidence_svc.
-    evidence_svc = svcs.get("evidence_svc")
-    if evidence_svc is not None:
-        row_id: int = await evidence_svc.record_evidence(
-            task_id=inp.task_id,
-            command=inp.command,
-            exit_code=inp.exit_code,
-            summary=inp.summary,
-            skipped=inp.skipped,
-            residual_risk=inp.residual_risk,
-        )
-        return {"id": row_id, "task_id": inp.task_id, "recorded": True}
-
-    # Fallback: direct DB insert (evidence_svc not configured)
-    db = svcs["db"]
-    ts = datetime.now(UTC).isoformat()
-
-    def _write(conn: Connection) -> int:
-        result = conn.execute(
-            text(
-                "INSERT INTO validation_evidence"
-                " (task_id, command, exit_code, summary, skipped, residual_risk, ts)"
-                " VALUES (:task_id, :command, :exit_code, :summary,"
-                "         :skipped, :residual_risk, :ts)"
-            ),
-            {
-                "task_id": inp.task_id,
-                "command": inp.command,
-                "exit_code": inp.exit_code,
-                "summary": inp.summary,
-                "skipped": inp.skipped,
-                "residual_risk": inp.residual_risk,
-                "ts": ts,
-            },
-        )
-        conn.commit()
-        last_id = result.lastrowid
-        if last_id is None:
-            raise RuntimeError("INSERT did not return a rowid")
-        return int(last_id)
-
-    row_id = await db.write(_write)
-    return {"id": row_id, "task_id": inp.task_id, "recorded": True}
-
-
-async def _handle_report_issue(
-    inp: ReportIssueInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    event_svc = svcs["event_svc"]
-    event_id = await event_svc.append(
-        inp.scope,
-        "error",
-        inp.title,
-        agent_id=inp.agent_id,
-        payload={"severity": inp.severity, "description": inp.description},
-    )
-    return {"event_id": event_id, "severity": inp.severity}
-
-
-async def _handle_update_progress(
-    inp: UpdateProgressInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    event_svc = svcs["event_svc"]
-    event_id = await event_svc.append(
-        inp.scope,
-        "state_change",
-        inp.message,
-        agent_id=inp.agent_id,
-        payload={"percent": inp.percent, "message": inp.message},
-    )
-    return {"event_id": event_id}
-
-
-async def _handle_request_approval(
-    inp: RequestApprovalInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    db = svcs["db"]
-    approval_id = str(uuid.uuid4())
-    ts = datetime.now(UTC).isoformat()
-
-    def _write(conn: Connection) -> None:
-        conn.execute(
-            text(
-                "INSERT INTO approvals"
-                " (id, scope, requester_agent_id, operation, rationale, risk,"
-                "  status, created_at)"
-                " VALUES (:id, :scope, :requester_agent_id, :operation,"
-                "         :rationale, :risk, 'pending', :created_at)"
-            ),
-            {
-                "id": approval_id,
-                "scope": inp.scope,
-                "requester_agent_id": inp.agent_id,
-                "operation": inp.operation,
-                "rationale": inp.rationale,
-                "risk": inp.risk,
-                "created_at": ts,
-            },
-        )
-        conn.commit()
-
-    await db.write(_write)
-    return {"id": approval_id, "status": "pending"}
-
-
-async def _handle_memory_write(
-    inp: MemoryWriteInput, svcs: dict[str, Any]
-) -> dict[str, object]:
-    db = svcs["db"]
-    mem_id = str(uuid.uuid4())
-    ts = datetime.now(UTC).isoformat()
-
-    def _write(conn: Connection) -> None:
-        conn.execute(
-            text(
-                "INSERT INTO memory"
-                " (id, scope, kind, title, body, created_at)"
-                " VALUES (:id, :scope, :kind, :title, :body, :created_at)"
-            ),
-            {
-                "id": mem_id,
-                "scope": inp.scope,
-                "kind": inp.kind,
-                "title": inp.title,
-                "body": inp.body,
-                "created_at": ts,
-            },
-        )
-        conn.commit()
-
-    await db.write(_write)
-    return {"id": mem_id, "kind": inp.kind}
-
-
-# ---------------------------------------------------------------------------
 # Tool registry — maps tool_name -> (InputSchema, handler_fn)
 # ---------------------------------------------------------------------------
 
@@ -485,6 +216,7 @@ _TOOL_REGISTRY: dict[str, tuple[type[BaseModel], Any]] = {
     "update_progress": (UpdateProgressInput, _handle_update_progress),
     "request_approval": (RequestApprovalInput, _handle_request_approval),
     "memory_write": (MemoryWriteInput, _handle_memory_write),
+    "execute_merge": (ExecuteMergeInput, _handle_execute_merge),
 }
 
 
@@ -585,9 +317,11 @@ async def dispatch_tool(
                 "status": 429,
             },
         ) from exc
+    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+        # Never swallow process-level signals or task cancellation.
+        raise
     except Exception as exc:
-        # Map unexpected errors to audit event + 500
-        # Typed: ValueError → 400, everything else → 500
+        # Typed mapping: ValueError → 400, Exception → 500
         error_msg = str(exc)
         await _emit_tool_error(event_svc, scope, agent_id, tool_name, error_msg)
         if isinstance(exc, ValueError):

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "_macros.html" import event_row, event_type_icon %}
+
+{% block title %}Event Timeline{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i data-lucide="activity" style="width:20px;height:20px;stroke-width:1.5;color:var(--accent)" aria-hidden="true"></i>
+  <h1 class="page-title">Event Timeline</h1>
+
+  <!-- Export button -->
+  <a class="btn btn-ghost btn-sm" style="margin-left:auto;"
+     href="/api/events?scope={{ current_scope or '' }}&format=jsonl"
+     download="events.jsonl"
+     aria-label="Export events as JSONL">
+    <i data-lucide="download" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+    Export JSONL
+  </a>
+</div>
+
+<div class="page-body" id="timeline-body" data-state="{{ 'error' if error else 'success' }}">
+  {% if error %}
+  <div id="error-state" class="error-banner" role="alert">
+    <i data-lucide="alert-triangle" style="width:16px;height:16px;stroke-width:1.5;flex-shrink:0" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+    <button class="btn btn-ghost btn-sm" onclick="window.location.reload()" style="margin-left:auto;" aria-label="Retry">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+      Retry
+    </button>
+  </div>
+  {% else %}
+  <div id="error-state" class="error-banner" role="alert" style="display:none;" aria-hidden="true"></div>
+  {% endif %}
+
+  <!-- Filters -->
+  <form method="get" action="/dashboard/timeline"
+        class="filters-bar"
+        id="timeline-filters"
+        aria-label="Timeline filters">
+
+    {% if scopes %}
+    <label for="scope-sel" class="text-muted" style="font-size:12px;">Scope</label>
+    <select id="scope-sel" name="scope" style="font-size:13px;">
+      <option value="" {% if not current_scope %}selected{% endif %}>All scopes</option>
+      {% for s in scopes %}
+      <option value="{{ s }}" {% if current_scope == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    <label for="type-sel" class="text-muted" style="font-size:12px;">Event type</label>
+    <select id="type-sel" name="type_filter" style="font-size:13px;">
+      <option value="" {% if not current_type %}selected{% endif %}>All types</option>
+      {% for t in event_types %}
+      <option value="{{ t }}" {% if current_type == t %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+
+    {% if agents %}
+    <label for="agent-sel" class="text-muted" style="font-size:12px;">Agent</label>
+    <select id="agent-sel" name="agent_id" style="font-size:13px;">
+      <option value="" {% if not current_agent %}selected{% endif %}>All agents</option>
+      {% for a in agents %}
+      <option value="{{ a.id }}" {% if current_agent == a.id %}selected{% endif %}>{{ a.name }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+
+    <button type="submit" class="btn btn-ghost btn-sm">
+      <i data-lucide="filter" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+      Filter
+    </button>
+
+    {% if current_scope or current_type or current_agent %}
+    <a href="/dashboard/timeline" class="btn btn-ghost btn-sm" aria-label="Clear all filters">
+      <i data-lucide="x" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+      Clear
+    </a>
+    {% endif %}
+  </form>
+
+  <!-- Event table -->
+  <div class="card" style="overflow-x:auto;">
+    <table class="data-table" aria-label="Event timeline">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Agent</th>
+          <th>Type</th>
+          <th>Summary</th>
+          <th>Payload</th>
+        </tr>
+      </thead>
+      <tbody id="timeline-tbody">
+        {% if events | length == 0 %}
+        <tr>
+          <td colspan="5">
+            <div class="empty-state" role="status">
+              <i data-lucide="search-x" style="width:32px;height:32px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+              <p class="empty-state-title">No events match the current filters.</p>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+          {% for event in events %}
+            {{ event_row(event, show_agent=true) }}
+          {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

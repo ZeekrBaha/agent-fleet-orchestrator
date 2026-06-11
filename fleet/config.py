@@ -17,12 +17,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FLEET_", case_sensitive=False)
 
     # env var names: FLEET_API_TOKEN, FLEET_HOST, FLEET_PORT, FLEET_DB_PATH,
-    # FLEET_SECRET_PATTERNS
+    # FLEET_SECRET_PATTERNS, FLEET_COMPACTION_THRESHOLD
     api_token: str = ""
     host: str = "127.0.0.1"
     port: int = 8000
     db_path: str = "fleet.db"
     secret_patterns: list[str] = ["FLEET_API_TOKEN"]
+    compaction_threshold: int = 80_000
 
     def is_local_bind(self) -> bool:
         """Return True iff the host is a loopback address."""

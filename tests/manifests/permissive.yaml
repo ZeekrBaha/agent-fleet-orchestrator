@@ -18,6 +18,7 @@ roles:
       - update_progress
       - request_approval
       - memory_write
+      - execute_merge
     spawn_rate:
       max_live_workers: 100
       max_spawns_per_minute: 100

@@ -129,3 +129,15 @@ class AgentBackend(Protocol):
         embedded in the transcript fixture.
         """
         ...
+
+    async def summarize(self, messages: list[dict[str, object]]) -> str:
+        """Request a condensed summary of *messages* from the backend.
+
+        Args:
+            messages: The conversation history to summarise (list of
+                      {"role": ..., "content": ...} dicts).
+
+        Returns:
+            A plain-text summary string.
+        """
+        ...

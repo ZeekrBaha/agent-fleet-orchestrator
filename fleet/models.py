@@ -27,6 +27,8 @@ MemoryKind = Literal[
     "command_recipe",
     "dependency_note",
     "deployment_note",
+    "compaction",
+    "note",
 ]
 
 # ---------------------------------------------------------------------------
@@ -108,3 +110,15 @@ class ApprovalRecord(BaseModel):
     comment: str | None = None
     created_at: str
     decided_at: str | None = None
+
+
+class MemoryRecord(BaseModel):
+    """Mirrors the `agent_memories` table row."""
+
+    id: int
+    agent_id: str
+    scope: str
+    kind: MemoryKind
+    content: str
+    metadata: dict[str, object]
+    ts: str

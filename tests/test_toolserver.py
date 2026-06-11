@@ -82,13 +82,20 @@ async def event_service(db: DatabaseManager) -> EventService:
     return EventService(db, hub)
 
 
-def _build_tools_app(db: DatabaseManager, event_service: EventService) -> FastAPI:
+def _build_tools_app(
+    db: DatabaseManager,
+    event_service: EventService,
+    evidence_svc: Any = None,
+) -> FastAPI:
     """Build a minimal FastAPI app wired with the tools router.
 
     Uses a permissive test manifest (test_role has all tools) so that
     non-policy tests can call any tool without worrying about ACL.
     """
     from fleet.api.tools import router, set_policy_service, set_tool_services
+    from fleet.review.evidence import EvidenceService
+
+    _evidence_svc = evidence_svc if evidence_svc is not None else EvidenceService(db)
 
     set_tool_services(
         agent_svc=_make_test_role_agent_svc(),
@@ -96,6 +103,7 @@ def _build_tools_app(db: DatabaseManager, event_service: EventService) -> FastAP
         workspace_svc=None,
         worktree_svc=None,
         db=db,
+        evidence_svc=_evidence_svc,
     )
     set_policy_service(_make_permissive_policy())
 
@@ -278,9 +286,9 @@ async def test_record_validation_inserts_row(
             "agent_id": "agent-1",
             "scope": "scope-1",
             "task_id": "task-001",
-            "command": "pytest -q",
-            "exit_code": 0,
-            "summary": "All green",
+            "check_name": "pytest -q",
+            "status": "pass",
+            "output": "All green",
         },
     )
     assert resp.status_code == 200
@@ -290,8 +298,8 @@ async def test_record_validation_inserts_row(
             text("SELECT * FROM validation_evidence WHERE task_id = 'task-001'")
         ).fetchone()
     assert row is not None
-    assert row.exit_code == 0
-    assert row.command == "pytest -q"
+    assert row.status == "pass"
+    assert row.check_name == "pytest -q"
 
 
 @pytest.mark.asyncio

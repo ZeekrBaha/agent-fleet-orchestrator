@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Connection, text
 
@@ -28,6 +29,10 @@ from fleet.db import DatabaseManager
 from fleet.events.service import EventService
 from fleet.models import AgentRecord
 
+if TYPE_CHECKING:
+    from fleet.approvals.service import ApprovalService
+    from fleet.memory.service import MemoryService
+
 
 class AgentService:
     """Orchestrates per-agent sessions and the shared inbox."""
@@ -37,10 +42,15 @@ class AgentService:
         db: DatabaseManager,
         event_service: EventService,
         inbox_service: InboxService,
+        *,
+        memory_svc: MemoryService | None = None,
+        approval_svc: ApprovalService | None = None,
     ) -> None:
         self._db = db
         self._event_service = event_service
         self._inbox = inbox_service
+        self._memory_svc = memory_svc
+        self._approval_svc = approval_svc
         # agent_id -> AgentSession
         self._sessions: dict[str, AgentSession] = {}
 
@@ -88,7 +98,7 @@ class AgentService:
                 workspace_context="",
             )
         except MissingRolePromptError:
-            # Emit error event and set agent status=failed.  Re-raise so the
+            # Emit error event, insert a failed agent row, then re-raise so the
             # caller knows the agent was not started (ADR-005: no silent fallback).
             await self._event_service.append(
                 scope,
@@ -97,6 +107,38 @@ class AgentService:
                 agent_id=agent_id,
                 payload={"role": role, "error": "MissingRolePromptError"},
             )
+
+            def _write_failed(conn: Connection) -> None:
+                conn.execute(
+                    text(
+                        "INSERT INTO agents"
+                        " (id, name, scope, role, backend, model, status,"
+                        "  parent_id, repository_id, budget_soft_usd, budget_hard_usd,"
+                        "  created_at, updated_at)"
+                        " VALUES"
+                        " (:id, :name, :scope, :role, :backend, :model, 'failed',"
+                        "  :parent_id, :repository_id,"
+                        "  :budget_soft_usd, :budget_hard_usd,"
+                        "  :created_at, :updated_at)"
+                    ),
+                    {
+                        "id": agent_id,
+                        "name": name,
+                        "scope": scope,
+                        "role": role,
+                        "backend": backend_name,
+                        "model": model,
+                        "parent_id": parent_id,
+                        "repository_id": repository_id,
+                        "budget_soft_usd": budget_soft_usd,
+                        "budget_hard_usd": budget_hard_usd,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                conn.commit()
+
+            await self._db.write(_write_failed)
             raise
 
         def _write(conn: Connection) -> None:
@@ -140,10 +182,13 @@ class AgentService:
         )
 
         # Start session task
-        self._start_session(agent_id, scope, backend)
+        self._start_session(
+            agent_id, scope, backend, role=role, task_description=task_description
+        )
 
         record = await self.get_agent(agent_id)
-        assert record is not None
+        if record is None:
+            raise RuntimeError(f"agent row missing after insert: {agent_id}")
         return record
 
     async def send_message(self, agent_id: str, sender: str, message: str) -> int:
@@ -206,9 +251,11 @@ class AgentService:
             conn.commit()
 
         await self._db.write(_write)
+        # Fetch scope via the async read path instead of the sync helper.
+        archived_record = await self.get_agent(agent_id)
+        scope = archived_record.scope if archived_record is not None else "unknown"
         await self._event_service.append(
-            # Fetch scope from DB first
-            _get_scope_sync(self._db, agent_id),
+            scope,
             "state_change",
             f"Agent {agent_id} archived",
             agent_id=agent_id,
@@ -226,6 +273,10 @@ class AgentService:
             backends: Optional mapping of agent_id -> backend instance.
                       If not provided for a given agent_id, a MockBackend
                       with an empty transcript is used as a placeholder.
+
+        For each agent, loads the most recent compaction memory (if any) and
+        passes its content as prior_context to the new session so the agent
+        resumes with its prior summary rather than a blank slate.
         """
         from fleet.agents.backends.mock import MockBackend
 
@@ -247,14 +298,29 @@ class AgentService:
             scope = row.scope
             if agent_id not in self._sessions:
                 backend = backends.get(agent_id, MockBackend(transcript=[]))
-                self._start_session(agent_id, scope, backend)
+                prior_context = ""
+                if self._memory_svc is not None:
+                    recent = await self._memory_svc.read_recent(
+                        agent_id, scope, kind="compaction", limit=1
+                    )
+                    if recent:
+                        prior_context = recent[-1].content
+                self._start_session(
+                    agent_id, scope, backend, prior_context=prior_context
+                )
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _start_session(
-        self, agent_id: str, scope: str, backend: AgentBackend
+        self,
+        agent_id: str,
+        scope: str,
+        backend: AgentBackend,
+        prior_context: str = "",
+        role: str = "worker",
+        task_description: str = "",
     ) -> None:
         """Create an AgentSession and launch it as an asyncio.Task."""
         budget = BudgetEnforcer(
@@ -271,6 +337,11 @@ class AgentService:
             inbox=self._inbox,
             db=self._db,
             budget=budget,
+            memory_svc=self._memory_svc,
+            prior_context=prior_context,
+            role=role,
+            task_description=task_description,
+            approval_svc=self._approval_svc,
         )
         task = asyncio.create_task(session.run(), name=f"session:{agent_id}")
         session._task = task
@@ -320,11 +391,3 @@ def _row_to_record(row) -> AgentRecord:  # type: ignore[no-untyped-def]
     )
 
 
-def _get_scope_sync(db: DatabaseManager, agent_id: str) -> str:
-    """Synchronously read the scope for agent_id (used during archive)."""
-    with db.read_connection() as conn:
-        row = conn.execute(
-            text("SELECT scope FROM agents WHERE id = :id"),
-            {"id": agent_id},
-        ).fetchone()
-    return row.scope if row else "unknown"

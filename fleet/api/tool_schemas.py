@@ -6,6 +6,8 @@ All schemas include ``agent_id`` and ``scope`` fields.  Separated from
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -15,6 +17,7 @@ class SpawnWorkerInput(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     role: str = Field(min_length=1)
     task_description: str
+    task_id: str | None = None
     model: str = Field(default="claude-sonnet-4-6")
     repository_id: str | None = None
     owned_paths: list[str] = Field(default_factory=list)
@@ -65,11 +68,10 @@ class RecordValidationInput(BaseModel):
     agent_id: str
     scope: str
     task_id: str
-    command: str = Field(min_length=1, max_length=1024)
-    exit_code: int
-    summary: str = Field(max_length=4096)
-    skipped: str | None = None
-    residual_risk: str | None = None
+    check_name: str = Field(min_length=1, max_length=1024)
+    status: Literal["pass", "fail", "skip"]
+    output: str = Field(default="", max_length=65536)
+    recorded_by: str | None = None
 
 
 class ReportIssueInput(BaseModel):
@@ -103,3 +105,9 @@ class MemoryWriteInput(BaseModel):
     )
     title: str = Field(min_length=1, max_length=256)
     body: str = Field(min_length=1, max_length=16384)
+
+
+class ExecuteMergeInput(BaseModel):
+    agent_id: str
+    scope: str
+    worktree_id: str = Field(min_length=1)

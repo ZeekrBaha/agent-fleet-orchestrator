@@ -209,10 +209,15 @@ async def test_cumulative_cost_accumulates(
 
 
 @pytest.mark.asyncio
-async def test_hard_limit_creates_approval_row(
+async def test_hard_limit_does_not_create_approval_row(
     db: DatabaseManager, event_service: EventService
 ) -> None:
-    """Hard limit hit → pending approval row with operation=over_budget_continue."""
+    """Hard limit hit → BudgetEnforcer does NOT insert an approval row.
+
+    Approval row creation is the responsibility of AgentSession (via
+    approval_svc.request()), not BudgetEnforcer.  BudgetEnforcer only emits
+    a budget_alert event and returns BudgetAction.PAUSE.
+    """
     from fleet.agents.budget import BudgetAction, BudgetEnforcer
 
     agent_id = "agent-hard-approval"
@@ -224,18 +229,15 @@ async def test_hard_limit_creates_approval_row(
 
     assert action == BudgetAction.PAUSE
 
+    # BudgetEnforcer must NOT have inserted any approval row.
     with db.read_connection() as conn:
         rows = conn.execute(
             text(
-                "SELECT id, scope, requester_agent_id, operation, status"
-                " FROM approvals WHERE requester_agent_id = :agent_id"
+                "SELECT id FROM approvals WHERE requester_agent_id = :agent_id"
             ),
             {"agent_id": agent_id},
         ).fetchall()
 
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.scope == scope
-    assert row.requester_agent_id == agent_id
-    assert row.operation == "over_budget_continue"
-    assert row.status == "pending"
+    assert len(rows) == 0, (
+        "BudgetEnforcer must not insert approval rows; AgentSession is responsible"
+    )

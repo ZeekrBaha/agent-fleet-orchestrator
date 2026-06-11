@@ -8,8 +8,6 @@ Public API:
 from __future__ import annotations
 
 import enum
-import uuid
-from datetime import UTC, datetime
 
 from sqlalchemy import Connection, text
 
@@ -31,7 +29,9 @@ class BudgetEnforcer:
       1. Atomically adds turn cost to agents.cost_usd in the DB.
       2. Reads the agent's budget limits and compares against the new total.
       3. Emits a budget_alert event when a limit is reached.
-      4. Inserts an approval row when the hard limit is reached.
+
+    Note: approval row creation on hard-limit is handled by AgentSession via
+    approval_svc.request(), not by BudgetEnforcer.
     """
 
     def __init__(
@@ -57,7 +57,7 @@ class BudgetEnforcer:
           1. Add turn_end.cost_usd to agents.cost_usd (atomic DB update).
           2. Read the updated total and budget limits.
           3. If new total >= budget_hard_usd: emit budget_alert (level=hard),
-             insert approval row, return BudgetAction.PAUSE.
+             return BudgetAction.PAUSE.  (AgentSession handles approval creation.)
           4. If new total >= budget_soft_usd (but < hard): emit budget_alert
              (level=soft), return BudgetAction.WARN.
           5. Else: return BudgetAction.OK.
@@ -74,7 +74,6 @@ class BudgetEnforcer:
         # Hard limit check takes precedence
         if budget_hard is not None and new_total >= budget_hard:
             await self._emit_budget_alert("hard", new_total, budget_hard)
-            await self._insert_approval()
             return BudgetAction.PAUSE
 
         # Soft limit check
@@ -131,47 +130,3 @@ class BudgetEnforcer:
             payload={"level": level, "cost_usd": cost_usd, "limit_usd": limit_usd},
         )
 
-    async def _insert_approval(self) -> None:
-        """Insert a pending approval row requesting continuation past the hard limit.
-
-        If a pending approval for this agent already exists, skip the insert to
-        avoid duplicate rows on repeated hard-limit hits.
-        """
-        approval_id = str(uuid.uuid4())
-        now = datetime.now(UTC).isoformat()
-
-        def _write(conn: Connection) -> None:
-            existing = conn.execute(
-                text(
-                    "SELECT id FROM approvals"
-                    " WHERE requester_agent_id = :aid"
-                    " AND status = 'pending'"
-                    " AND operation = 'over_budget_continue'"
-                    " LIMIT 1"
-                ),
-                {"aid": self._agent_id},
-            ).fetchone()
-            if existing:
-                return  # already pending, don't create duplicate
-            conn.execute(
-                text(
-                    "INSERT INTO approvals"
-                    " (id, scope, requester_agent_id, operation, rationale,"
-                    "  risk, status, created_at)"
-                    " VALUES"
-                    " (:id, :scope, :requester_agent_id, :operation, :rationale,"
-                    "  :risk, 'pending', :created_at)"
-                ),
-                {
-                    "id": approval_id,
-                    "scope": self._scope,
-                    "requester_agent_id": self._agent_id,
-                    "operation": "over_budget_continue",
-                    "rationale": "Hard budget limit reached",
-                    "risk": "Continuing will exceed hard budget limit",
-                    "created_at": now,
-                },
-            )
-            conn.commit()
-
-        await self._db.write(_write)

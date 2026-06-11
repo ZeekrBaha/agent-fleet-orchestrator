@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS worktrees (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id),
     repository_id TEXT NOT NULL REFERENCES repositories(id),
+    task_id TEXT,
     path TEXT NOT NULL,
     branch TEXT NOT NULL,
     base_branch TEXT NOT NULL,
@@ -76,14 +77,13 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE TABLE IF NOT EXISTS validation_evidence (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id TEXT NOT NULL REFERENCES tasks(id),
-    command TEXT NOT NULL,
-    exit_code INTEGER NOT NULL,
-    summary TEXT NOT NULL,
-    skipped TEXT,
-    residual_risk TEXT,
-    ts TEXT NOT NULL
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id   INTEGER NOT NULL REFERENCES tasks(id),
+    check_name TEXT NOT NULL,
+    status    TEXT NOT NULL CHECK(status IN ('pass','fail','skip')),
+    output    TEXT NOT NULL DEFAULT '',
+    recorded_by TEXT,          -- agent_id, nullable (human can record too)
+    ts        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 CREATE TABLE IF NOT EXISTS approvals (
@@ -109,6 +109,18 @@ CREATE TABLE IF NOT EXISTS memory (
     source_event_id INTEGER REFERENCES events(id),
     created_at TEXT NOT NULL
 );
+
+-- agent_memories: per-agent compaction summaries and other memory kinds
+CREATE TABLE IF NOT EXISTS agent_memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_memories_agent_scope ON agent_memories(agent_id, scope);
 
 CREATE TABLE IF NOT EXISTS usage_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

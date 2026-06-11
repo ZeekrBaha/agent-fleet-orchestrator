@@ -193,22 +193,27 @@ async def record_validation(
     agent_id: str,
     scope: str,
     task_id: str,
-    command: str,
-    exit_code: int,
-    summary: str,
-    skipped: str | None = None,
-    residual_risk: str | None = None,
+    check_name: str,
+    status: str,
+    output: str = "",
+    recorded_by: str | None = None,
 ) -> dict[str, object]:
-    """Record a validation evidence entry for a task."""
+    """Record a validation evidence entry for a task.
+
+    Args:
+        check_name:  Name of the check (e.g. 'pytest -q', 'ruff check .').
+        status:      One of 'pass', 'fail', 'skip'.
+        output:      Command output or summary text.
+        recorded_by: Agent id of recorder (defaults to agent_id if omitted).
+    """
     inp = RecordValidationInput(
         agent_id=agent_id,
         scope=scope,
         task_id=task_id,
-        command=command,
-        exit_code=exit_code,
-        summary=summary,
-        skipped=skipped,
-        residual_risk=residual_risk,
+        check_name=check_name,
+        status=status,  # type: ignore[arg-type]
+        output=output,
+        recorded_by=recorded_by,
     )
     relay = _get_relay()
     return await relay.call("record_validation", agent_id, scope, inp.model_dump())

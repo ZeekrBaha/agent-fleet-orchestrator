@@ -62,7 +62,7 @@ def test_truncate_no_cap_when_budget_zero() -> None:
 
 
 def test_assemble_prompt_contains_all_layers() -> None:
-    """Assembled result has exactly 7 layers; platform rules appear in system_prompt."""
+    """Assembled result has exactly 8 layers; platform rules appear in system_prompt."""
     result = assemble_prompt(
         role="orchestrator",
         task_prompt="Build a feature.",
@@ -72,7 +72,7 @@ def test_assemble_prompt_contains_all_layers() -> None:
         workspace_context="repo=/repo",
     )
     assert isinstance(result, AssembledPrompt)
-    assert len(result.layers) == 7
+    assert len(result.layers) == 8
     # platform rules marker must be present
     assert "Fleet Platform Rules" in result.system_prompt
 
@@ -103,7 +103,7 @@ def test_task_prompt_not_truncated() -> None:
     """A 10 000-char task prompt must survive unchanged in the assembled layers."""
     long_task = "A" * 10_000
     result = assemble_prompt(role="orchestrator", task_prompt=long_task)
-    task_layer = result.layers[3]
+    task_layer = result.layers[4]
     assert task_layer.name == "task"
     assert task_layer.content == long_task
 
@@ -115,7 +115,7 @@ def test_team_state_truncated_to_budget() -> None:
     result = assemble_prompt(
         role="orchestrator", task_prompt="Go.", team_state=long_state
     )
-    team_layer = result.layers[4]
+    team_layer = result.layers[5]
     assert team_layer.name == "team_state"
     assert team_layer.token_count <= 600
 
@@ -168,14 +168,14 @@ def test_all_four_roles_load() -> None:
     """All four named roles must have prompt files and load without error."""
     for role in ("orchestrator", "coder", "reviewer", "observer"):
         result = assemble_prompt(role=role, task_prompt="Test.")
-        assert len(result.layers) == 7, f"Role {role!r} did not produce 7 layers"
+        assert len(result.layers) == 8, f"Role {role!r} did not produce 8 layers"
 
 
 def test_empty_memory_and_tools_produce_empty_layers() -> None:
     """When memory and tools are empty/None, those layers exist with empty content."""
     result = assemble_prompt(role="observer", task_prompt="Watch.")
-    memory_layer = result.layers[5]
-    tools_layer = result.layers[6]
+    memory_layer = result.layers[6]
+    tools_layer = result.layers[7]
     assert memory_layer.name == "memory"
     assert tools_layer.name == "tools"
     # content should be empty string (no snippets provided)

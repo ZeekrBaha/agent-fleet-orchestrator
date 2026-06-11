@@ -3,7 +3,7 @@
 Public API:
     EvidenceService(db) -> EvidenceService
     EvidenceService.create_task(scope, title, description, ...) -> str
-    EvidenceService.record_evidence(task_id, command, exit_code, summary, ...) -> int
+    EvidenceService.record_evidence(task_id, check_name, status, output, ...) -> int
     EvidenceService.get_task(task_id) -> dict | None
     EvidenceService.list_evidence(task_id) -> list[dict]
     EvidenceService.check_merge_gate(task_id) -> tuple[bool, str]
@@ -76,32 +76,37 @@ class EvidenceService:
     async def record_evidence(
         self,
         task_id: str,
-        command: str,
-        exit_code: int,
-        summary: str,
+        check_name: str,
+        status: str,
+        output: str = "",
         *,
-        skipped: str | None = None,
-        residual_risk: str | None = None,
+        recorded_by: str | None = None,
     ) -> int:
-        """Insert a validation_evidence row. Returns the auto-increment id."""
+        """Insert a validation_evidence row. Returns the auto-increment id.
+
+        Args:
+            task_id:     Task this evidence belongs to.
+            check_name:  Name of the check (e.g. "pytest", "ruff check .").
+            status:      One of 'pass', 'fail', 'skip'.
+            output:      Command output or summary text.
+            recorded_by: agent_id of the recorder, or None if recorded by a human.
+        """
         ts = datetime.now(UTC).isoformat()
 
         def _write(conn: Connection) -> int:
             result = conn.execute(
                 text(
                     "INSERT INTO validation_evidence"
-                    " (task_id, command, exit_code, summary,"
-                    "  skipped, residual_risk, ts)"
-                    " VALUES (:task_id, :command, :exit_code, :summary,"
-                    "         :skipped, :residual_risk, :ts)"
+                    " (task_id, check_name, status, output, recorded_by, ts)"
+                    " VALUES (:task_id, :check_name, :status, :output,"
+                    "         :recorded_by, :ts)"
                 ),
                 {
                     "task_id": task_id,
-                    "command": command,
-                    "exit_code": exit_code,
-                    "summary": summary,
-                    "skipped": skipped,
-                    "residual_risk": residual_risk,
+                    "check_name": check_name,
+                    "status": status,
+                    "output": output,
+                    "recorded_by": recorded_by,
                     "ts": ts,
                 },
             )
@@ -147,8 +152,7 @@ class EvidenceService:
         with self._db.read_connection() as conn:
             rows = conn.execute(
                 text(
-                    "SELECT id, task_id, command, exit_code, summary,"
-                    "  skipped, residual_risk, ts"
+                    "SELECT id, task_id, check_name, status, output, recorded_by, ts"
                     " FROM validation_evidence"
                     " WHERE task_id = :task_id"
                     " ORDER BY id ASC"
@@ -160,11 +164,10 @@ class EvidenceService:
             {
                 "id": row.id,
                 "task_id": row.task_id,
-                "command": row.command,
-                "exit_code": row.exit_code,
-                "summary": row.summary,
-                "skipped": row.skipped,
-                "residual_risk": row.residual_risk,
+                "check_name": row.check_name,
+                "status": row.status,
+                "output": row.output,
+                "recorded_by": row.recorded_by,
                 "ts": row.ts,
             }
             for row in rows
@@ -177,7 +180,16 @@ class EvidenceService:
         can_merge=True only when:
           - task exists
           - at least one evidence row exists
-          - all evidence rows have exit_code=0
+          - all evidence rows have status='pass' or status='skip' (none 'fail')
+
+        Reviewer verdict logic (simple, no policy configuration required):
+          - If a 'review' check row exists and its status='fail' → gate fails
+            with reason "reviewer verdict: fail" (takes precedence over other
+            failing checks so the message is clear).
+          - If a 'review' check row exists and its status='pass' → counts as
+            passing; other checks are still evaluated normally.
+          - If no 'review' check row exists → reviewer is optional; gate
+            proceeds based on other evidence.
         """
         task = await self.get_task(task_id)
         if task is None:
@@ -187,9 +199,18 @@ class EvidenceService:
         if not evidence:
             return False, "No validation evidence recorded; run checks before merging"
 
-        failing = [e for e in evidence if e["exit_code"] != 0]
-        if failing:
-            commands = ", ".join(str(e["command"]) for e in failing)
-            return False, f"{len(failing)} failing check(s): {commands}"
+        # Check reviewer verdict first — it produces a distinct failure message.
+        review_rows = [e for e in evidence if e["check_name"] == "review"]
+        if review_rows:
+            # Use the most recent review row (highest id, list is ordered by id ASC).
+            latest_review = review_rows[-1]
+            if latest_review["status"] == "fail":
+                return False, "reviewer verdict: fail"
 
-        return True, f"All {len(evidence)} check(s) passed; merge gate open"
+        # Check all remaining rows for failures.
+        failing = [e for e in evidence if e["status"] == "fail"]
+        if failing:
+            checks = ", ".join(str(e["check_name"]) for e in failing)
+            return False, f"{len(failing)} failing check(s): {checks}"
+
+        return True, "all checks passed"

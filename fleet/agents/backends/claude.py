@@ -11,6 +11,7 @@ approximation; model-specific rates are a future concern).
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
@@ -275,14 +276,13 @@ class ClaudeBackend:
                         if idx is not None and idx in tool_blocks:
                             tb = tool_blocks.pop(idx)
                             # Assemble and parse the accumulated JSON
-                            import json as _json
                             raw_json = "".join(tb["input_json_parts"])
                             tool_name = tb["tool_name"]
                             try:
                                 parsed_input: dict[str, Any] = (
-                                    _json.loads(raw_json) if raw_json else {}
+                                    json.loads(raw_json) if raw_json else {}
                                 )
-                            except _json.JSONDecodeError as exc:
+                            except json.JSONDecodeError as exc:
                                 _logger.warning(
                                     "malformed tool JSON for tool %r: %r"
                                     " — using empty input",
@@ -371,6 +371,55 @@ class ClaudeBackend:
                 "is_error": is_error,
             }
         )
+
+    async def summarize(self, messages: list[dict[str, object]]) -> str:
+        """Request a condensed summary of *messages* from Claude.
+
+        Sends the conversation history plus a summarise instruction as a
+        one-shot user message (no session state is mutated).
+
+        Args:
+            messages: The conversation history to summarise.
+
+        Returns:
+            A plain-text summary string from the model.
+        """
+        client = anthropic.Anthropic(api_key=self._api_key)
+
+        summarise_instruction = (
+            "Please provide a concise summary of the conversation above, "
+            "capturing the key decisions, findings, and context needed to "
+            "continue this work. Be brief and factual."
+        )
+
+        # Build a fresh message list: prior conversation + summary request
+        history = [
+            {"role": str(m.get("role", "")), "content": str(m.get("content", ""))}
+            for m in messages
+        ]
+        summary_messages: list[dict[str, Any]] = [
+            *history,
+            {"role": "user", "content": summarise_instruction},
+        ]
+
+        stream_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": summary_messages,
+            "max_tokens": 1024,
+        }
+        if self._system_prompt:
+            stream_kwargs["system"] = self._system_prompt
+
+        try:
+            response = client.messages.create(**stream_kwargs)
+            # Extract text from the first content block
+            for block in response.content:
+                if getattr(block, "type", None) == "text":
+                    return str(block.text)
+            return ""
+        except anthropic.APIError as exc:
+            _logger.warning("summarize() API call failed: %s", exc)
+            return f"[summary unavailable: {exc}]"
 
 
 # ---------------------------------------------------------------------------

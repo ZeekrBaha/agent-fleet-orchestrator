@@ -1,0 +1,132 @@
+{% macro status_badge(status) %}
+<span class="status-badge status-{{ status }}" aria-label="Status: {{ status }}">
+  <span class="status-dot dot-{{ status }}"></span>
+  {{ status | replace("_", " ") }}
+</span>
+{% endmacro %}
+
+{% macro status_dot_only(status) %}
+<span class="status-dot dot-{{ status }}" aria-label="{{ status }}"></span>
+{% endmacro %}
+
+{% macro event_type_icon(event_type) %}
+{% if event_type == 'error' %}
+  <i data-lucide="alert-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--status-failed)" aria-label="error"></i>
+{% elif event_type == 'tool_call' %}
+  <i data-lucide="zap" style="width:16px;height:16px;stroke-width:1.5;color:var(--accent)" aria-label="tool call"></i>
+{% elif event_type == 'tool_result' %}
+  <i data-lucide="check-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--diff-add-fg)" aria-label="tool result"></i>
+{% elif event_type == 'turn_end' %}
+  <i data-lucide="corner-down-left" style="width:16px;height:16px;stroke-width:1.5;color:var(--text-muted)" aria-label="turn end"></i>
+{% elif event_type == 'agent.started' %}
+  <i data-lucide="play-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--status-running)" aria-label="agent started"></i>
+{% elif event_type == 'agent.idle' %}
+  <i data-lucide="pause-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--status-idle)" aria-label="agent idle"></i>
+{% elif event_type == 'approval_request' %}
+  <i data-lucide="shield" style="width:16px;height:16px;stroke-width:1.5;color:var(--status-waiting)" aria-label="approval request"></i>
+{% elif event_type == 'approval_decision' %}
+  <i data-lucide="shield-check" style="width:16px;height:16px;stroke-width:1.5;color:var(--accent)" aria-label="approval decision"></i>
+{% elif event_type == 'agent.message' %}
+  <i data-lucide="message-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--text-secondary)" aria-label="agent message"></i>
+{% elif event_type == 'task.created' %}
+  <i data-lucide="file-plus" style="width:16px;height:16px;stroke-width:1.5;color:var(--accent)" aria-label="task created"></i>
+{% elif event_type == 'task.updated' %}
+  <i data-lucide="file-edit" style="width:16px;height:16px;stroke-width:1.5;color:var(--text-secondary)" aria-label="task updated"></i>
+{% else %}
+  <i data-lucide="circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--text-muted)" aria-label="{{ event_type }}"></i>
+{% endif %}
+{% endmacro %}
+
+{% macro event_row(event, show_agent=true) %}
+<tr class="event-row" data-event-id="{{ event.id }}" data-event-type="{{ event.type }}">
+  <td><span class="mono text-muted">{{ event.ts }}</span></td>
+  {% if show_agent %}
+  <td><span class="text-secondary">{{ event.agent_id or '—' }}</span></td>
+  {% endif %}
+  <td>
+    <span style="display:inline-flex;align-items:center;gap:4px;">
+      {{ event_type_icon(event.type) }}
+      <span class="text-muted mono" style="font-size:11px">{{ event.type }}</span>
+    </span>
+  </td>
+  <td>{{ event.summary }}</td>
+  <td>
+    {% if event.payload %}
+    <details>
+      <summary>
+        <i data-lucide="chevron-right" style="width:14px;height:14px;stroke-width:1.5;display:inline-block;vertical-align:middle" aria-hidden="true"></i>
+        <span class="sr-only">Expand payload</span>
+      </summary>
+      <pre style="margin-top:8px;padding:8px;background:var(--overlay);border-radius:6px;font-size:11px;overflow:auto;max-height:200px;">{{ event.payload | tojson(indent=2) }}</pre>
+    </details>
+    {% endif %}
+  </td>
+</tr>
+{% endmacro %}
+
+{% macro agent_card(agent, relative_time, format_cost) %}
+<tr class="agent-row" data-agent-id="{{ agent.id }}" data-status="{{ agent.status }}">
+  <td>
+    <a href="/dashboard/agents/{{ agent.id }}/conversation" style="font-weight:500;">
+      {{ agent.name }}
+    </a>
+  </td>
+  <td><span class="role-pill">{{ agent.role }}</span></td>
+  <td><span class="mono">{{ agent.model }}</span></td>
+  <td>
+    <span class="status-badge status-{{ agent.status }}">
+      <span class="status-dot dot-{{ agent.status }}"></span>
+      {{ agent.status | replace("_", " ") }}
+    </span>
+  </td>
+  <td>
+    <div class="context-bar-wrap">
+      <div class="context-bar-bg" role="progressbar"
+           aria-valuenow="{{ agent.context_pct | int }}"
+           aria-valuemin="0" aria-valuemax="100"
+           aria-label="Context {{ agent.context_pct | int }}%">
+        <div class="context-bar-fill" style="width:{{ [agent.context_pct, 100] | min }}%"></div>
+      </div>
+      <span class="context-bar-pct mono">{{ "%.0f"|format(agent.context_pct) }}%</span>
+    </div>
+  </td>
+  <td><span class="mono">{{ format_cost(agent.cost_usd) }}</span></td>
+  <td><span class="text-muted">{{ relative_time(agent.updated_at) }}</span></td>
+  <td>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <a href="/dashboard/agents/{{ agent.id }}/conversation"
+         class="btn btn-ghost btn-sm"
+         aria-label="Open conversation for {{ agent.name }}">
+        <i data-lucide="message-square" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+        Open
+      </a>
+      <button class="btn btn-ghost btn-sm"
+              hx-post="/api/agents/{{ agent.id }}/interrupt"
+              hx-confirm="Interrupt {{ agent.name }}?"
+              hx-target="closest tr"
+              aria-label="Interrupt agent {{ agent.name }}">
+        <i data-lucide="square" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+        Interrupt
+      </button>
+      <details style="position:relative;">
+        <summary class="btn btn-ghost btn-sm" aria-label="Send message to {{ agent.name }}">
+          <i data-lucide="send" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+          Send
+        </summary>
+        <form class="inline-form" style="position:absolute;right:0;top:100%;margin-top:4px;padding:12px;background:var(--overlay);border:1px solid var(--border);border-radius:var(--radius-card);z-index:10;min-width:280px;"
+              hx-post="/api/agents/{{ agent.id }}/messages"
+              hx-target="closest details"
+              hx-swap="outerHTML">
+          <input type="hidden" name="sender" value="dashboard">
+          <input type="text" name="message" placeholder="Message…" style="flex:1;min-width:0;"
+                 aria-label="Message to {{ agent.name }}" required>
+          <button type="submit" class="btn btn-primary btn-sm">
+            <i data-lucide="send" style="width:12px;height:12px;stroke-width:1.5" aria-hidden="true"></i>
+            Send
+          </button>
+        </form>
+      </details>
+    </div>
+  </td>
+</tr>
+{% endmacro %}

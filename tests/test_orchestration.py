@@ -153,17 +153,17 @@ async def test_record_evidence_inserts_row(evidence_service: EvidenceService) ->
     )
     ev_id = await evidence_service.record_evidence(
         task_id=task_id,
-        command="pytest -q",
-        exit_code=0,
-        summary="All green",
+        check_name="pytest -q",
+        status="pass",
+        output="All green",
     )
     assert isinstance(ev_id, int)
 
     rows = await evidence_service.list_evidence(task_id)
     assert len(rows) == 1
-    assert rows[0]["command"] == "pytest -q"
-    assert rows[0]["exit_code"] == 0
-    assert rows[0]["summary"] == "All green"
+    assert rows[0]["check_name"] == "pytest -q"
+    assert rows[0]["status"] == "pass"
+    assert rows[0]["output"] == "All green"
 
 
 @pytest.mark.asyncio
@@ -181,38 +181,38 @@ async def test_merge_gate_no_evidence_blocks(evidence_service: EvidenceService) 
 
 @pytest.mark.asyncio
 async def test_merge_gate_all_passing_allows(evidence_service: EvidenceService) -> None:
-    """All evidence rows with exit_code=0 → can_merge=True."""
+    """All evidence rows with status=pass → can_merge=True, exact reason string."""
     task_id = await evidence_service.create_task(
         scope="test-scope",
         title="Green task",
         description="All checks pass",
     )
     await evidence_service.record_evidence(
-        task_id=task_id, command="pytest -q", exit_code=0, summary="green"
+        task_id=task_id, check_name="pytest -q", status="pass", output="green"
     )
     await evidence_service.record_evidence(
-        task_id=task_id, command="ruff check .", exit_code=0, summary="clean"
+        task_id=task_id, check_name="ruff check .", status="pass", output="clean"
     )
     can_merge, reason = await evidence_service.check_merge_gate(task_id)
     assert can_merge is True
-    assert reason
+    assert reason == "all checks passed"
 
 
 @pytest.mark.asyncio
 async def test_merge_gate_failing_evidence_blocks(
     evidence_service: EvidenceService,
 ) -> None:
-    """Any evidence row with exit_code != 0 → can_merge=False."""
+    """Any evidence row with status=fail → can_merge=False."""
     task_id = await evidence_service.create_task(
         scope="test-scope",
         title="Failing task",
         description="One check failed",
     )
     await evidence_service.record_evidence(
-        task_id=task_id, command="pytest -q", exit_code=0, summary="green"
+        task_id=task_id, check_name="pytest -q", status="pass", output="green"
     )
     await evidence_service.record_evidence(
-        task_id=task_id, command="mypy .", exit_code=1, summary="type errors"
+        task_id=task_id, check_name="mypy .", status="fail", output="type errors"
     )
     can_merge, reason = await evidence_service.check_merge_gate(task_id)
     assert can_merge is False
@@ -231,16 +231,32 @@ async def test_golden_event_sequence(
 ) -> None:
     """AC-020: golden event sequence for orchestrator→worker flow.
 
-    Orchestrator runs a turn that emits spawn_worker tool call.
-    Worker runs a turn that emits record_validation tool call.
-    Asserts the correct event types appear in the DB, in order.
+    Orchestrator runs a turn that emits a spawn_worker tool call.
+    The test then drives spawn_worker via the tools HTTP endpoint.
+    The worker's record_validation is driven via the tools HTTP endpoint.
+    Asserts the correct event types appear in the DB, check_merge_gate passes.
     """
+    import os
+
     from fleet.agents.inbox import InboxService
     from fleet.agents.service import AgentService
+    from fleet.api.auth import require_token
+    from fleet.api.tools import router as tools_router
+    from fleet.api.tools import set_policy_service, set_tool_services
+    from fleet.policy.rules import load_manifest
+    from fleet.policy.service import PolicyService
 
     scope = "golden-scope"
 
-    # Build transcripts
+    _DEFAULT_MANIFEST_PATH = os.path.join(
+        os.path.dirname(__file__), "..", "fleet", "manifests", "default.yaml"
+    )
+    evidence_svc = EvidenceService(db)
+
+    inbox = InboxService(db)
+    agent_svc = AgentService(db, event_service, inbox)
+
+    # Build transcripts for orchestrator (emits spawn_worker) and worker
     orch_transcript = [
         [
             TextChunk(text="analyzing task"),
@@ -253,23 +269,6 @@ async def test_golden_event_sequence(
             _make_turn_end(),
         ]
     ]
-
-    worker_transcript = [
-        [
-            TextChunk(text="implementing"),
-            ToolUseEvent(
-                tool_id="t2",
-                tool_name="record_validation",
-                input={"task_id": "task-x", "command": "pytest", "exit_code": 0},
-            ),
-            ToolResultEvent(tool_id="t2", output="recorded", is_error=False),
-            _make_turn_end(),
-        ]
-    ]
-
-    inbox = InboxService(db)
-    agent_svc = AgentService(db, event_service, inbox)
-
     sessions_to_cleanup: list[Any] = []
 
     try:
@@ -289,40 +288,101 @@ async def test_golden_event_sequence(
         await agent_svc.send_message(orch_record.id, "user", "build feature X")
         await _wait_for_agent_message(event_service, scope, agent_id=orch_record.id)
 
-        # c. Simulate worker spawn (create worker agent)
-        worker_backend = MockBackend(transcript=worker_transcript)
-        worker_record = await agent_svc.create_agent(
-            scope=scope,
-            name="worker-1",
-            role="coder",
-            backend=worker_backend,
-            model="mock",
-            task_description="implement it",
+        # c. Wire the tools router and call spawn_worker via HTTP (AC-019)
+        #    This drives the actual tool handler, creating the worker agent and
+        #    emitting the task_created state_change event.
+        set_tool_services(
+            agent_svc=agent_svc,
+            event_svc=event_service,
+            workspace_svc=None,
+            worktree_svc=None,
+            db=db,
+            evidence_svc=evidence_svc,
         )
-        sessions_to_cleanup.append(worker_record.id)
+        policy_svc = PolicyService(load_manifest(_DEFAULT_MANIFEST_PATH))
+        set_policy_service(policy_svc)
 
-        # d. Send message to worker; wait for its turn
-        await agent_svc.send_message(worker_record.id, "orchestrator", "implement it")
-        await _wait_for_agent_message(event_service, scope, agent_id=worker_record.id)
+        tools_app = FastAPI()
+        tools_app.include_router(tools_router)
+        tools_app.dependency_overrides[require_token] = lambda: None
 
-        # e. Assert golden event sequence
+        async with AsyncClient(
+            transport=ASGITransport(tools_app), base_url="http://test"
+        ) as tools_client:
+            # Call spawn_worker via HTTP — this creates the worker agent
+            spawn_resp = await tools_client.post(
+                "/api/tools/spawn_worker",
+                json={
+                    "agent_id": orch_record.id,
+                    "scope": scope,
+                    "name": "worker-1",
+                    "role": "coder",
+                    "task_description": "implement it",
+                    "task_id": "task-golden-1",
+                },
+            )
+            assert spawn_resp.status_code == 200, spawn_resp.text
+            worker_agent_id = spawn_resp.json()["agent_id"]
+            sessions_to_cleanup.append(worker_agent_id)
+
+            # d. Create a task for the worker to record evidence against
+            task_id = await evidence_svc.create_task(
+                scope=scope,
+                title="Golden task",
+                description="Build feature X",
+                owner_agent_id=worker_agent_id,
+            )
+
+            # e. Record evidence via HTTP (worker calls record_validation)
+            record_resp = await tools_client.post(
+                "/api/tools/record_validation",
+                json={
+                    "agent_id": worker_agent_id,
+                    "scope": scope,
+                    "task_id": task_id,
+                    "check_name": "pytest -q",
+                    "status": "pass",
+                    "output": "all green",
+                },
+            )
+            assert record_resp.status_code == 200, record_resp.text
+
+        # f. Assert check_merge_gate returns (True, "all checks passed")
+        can_merge, reason = await evidence_svc.check_merge_gate(task_id)
+        assert can_merge is True, f"Expected gate open, got reason: {reason!r}"
+        assert reason == "all checks passed"
+
+        # g. Assert validation_evidence row exists in DB
+        from sqlalchemy import text as sql_text
+
+        with db.read_connection() as conn:
+            ev_rows = conn.execute(
+                sql_text(
+                    "SELECT id, check_name, status FROM validation_evidence"
+                    " WHERE task_id = :task_id"
+                ),
+                {"task_id": task_id},
+            ).fetchall()
+        assert len(ev_rows) >= 1, "Expected at least one validation_evidence row"
+        assert ev_rows[0].status == "pass"
+        assert ev_rows[0].check_name == "pytest -q"
+
+        # h. Assert golden event sequence
         all_events = await event_service.query(scope, limit=500)
-        event_types = [e.type for e in all_events]
 
-        # Must have at least two agent_message events
+        # Must have at least one agent_message event from orchestrator
         agent_messages = [e for e in all_events if e.type == "agent_message"]
-        n = len(agent_messages)
-        assert n >= 2, (
-            f"Expected >= 2 agent_message events, got {n}: {event_types}"
+        assert len(agent_messages) >= 1, (
+            f"Expected >= 1 agent_message events, got: {[e.type for e in all_events]}"
         )
 
-        # Must have tool_call for spawn_worker
+        # Must have tool_call for spawn_worker (emitted by the HTTP handler)
         tool_calls = [e for e in all_events if e.type == "tool_call"]
         spawn_calls = [
             e for e in tool_calls if e.payload.get("tool_name") == "spawn_worker"
         ]
         assert len(spawn_calls) >= 1, (
-            f"Expected spawn_worker tool_call, got tool_calls: "
+            f"Expected spawn_worker tool_call, got: "
             f"{[e.payload.get('tool_name') for e in tool_calls]}"
         )
 
@@ -331,26 +391,22 @@ async def test_golden_event_sequence(
             e for e in tool_calls if e.payload.get("tool_name") == "record_validation"
         ]
         assert len(record_calls) >= 1, (
-            f"Expected record_validation tool_call, got tool_calls: "
+            f"Expected record_validation tool_call, got: "
             f"{[e.payload.get('tool_name') for e in tool_calls]}"
         )
 
-        # State-change ordering: running → (message) → idle → running → (message) → idle
+        # Must have task_created state_change event
         state_events = [e for e in all_events if e.type == "state_change"]
-        statuses = [e.payload.get("status") for e in state_events]
-        # At minimum: 2 running + 2 idle (from both agents processing their turns)
-        running_count = statuses.count("running")
-        idle_count = statuses.count("idle")
-        assert running_count >= 2, (
-            f"Expected >= 2 running state changes, got: {statuses}"
-        )
-        assert idle_count >= 2, (
-            f"Expected >= 2 idle state changes, got: {statuses}"
+        task_created_events = [
+            e for e in state_events if e.summary == "task_created"
+        ]
+        assert len(task_created_events) >= 1, (
+            "Expected task_created state_change event from spawn_worker"
         )
 
     finally:
-        for agent_id in sessions_to_cleanup:
-            session = agent_svc._sessions.get(agent_id)
+        for aid in sessions_to_cleanup:
+            session = agent_svc._sessions.get(aid)
             if session and session._task and not session._task.done():
                 session._task.cancel()
                 try:
@@ -364,7 +420,9 @@ async def test_spawn_worker_missing_role_prompt_fails(
     db: DatabaseManager,
     event_service: EventService,
 ) -> None:
-    """create_agent() with nonexistent role prompt → error event emitted."""
+    """create_agent() with bad role → error event emitted, failed row in DB."""
+    from sqlalchemy import text as sql_text
+
     from fleet.agents.inbox import InboxService
     from fleet.agents.service import AgentService
 
@@ -388,6 +446,18 @@ async def test_spawn_worker_missing_role_prompt_fails(
     # An error event must be emitted before the exception propagates (ADR-005).
     error_events = await event_service.query(scope, type_filter="error")
     assert len(error_events) >= 1, "Expected error event on MissingRolePromptError"
+
+    # AC-022: A failed agent row must exist in the DB.
+    with db.read_connection() as conn:
+        row = conn.execute(
+            sql_text(
+                "SELECT id, status FROM agents"
+                " WHERE scope = :scope AND name = 'bad-agent'"
+            ),
+            {"scope": scope},
+        ).fetchone()
+    assert row is not None, "Expected a failed agent row in the DB"
+    assert row.status == "failed", f"Expected status='failed', got {row.status!r}"
 
 
 @pytest.mark.asyncio
@@ -439,7 +509,10 @@ async def test_evidence_gate_api(
         #    (the tool endpoint record_validation goes through the tools router,
         #    which is separately wired; here we test the review API surface)
         await evidence_svc.record_evidence(
-            task_id=task_id, command="pytest -q", exit_code=0, summary="All green"
+            task_id=task_id,
+            check_name="pytest -q",
+            status="pass",
+            output="All green",
         )
 
         # 4. List evidence via API
@@ -449,7 +522,7 @@ async def test_evidence_gate_api(
         assert resp.status_code == 200
         rows = resp.json()
         assert len(rows) == 1
-        assert rows[0]["exit_code"] == 0
+        assert rows[0]["status"] == "pass"
 
         # 5. Gate should now allow merge
         resp = await client.get(

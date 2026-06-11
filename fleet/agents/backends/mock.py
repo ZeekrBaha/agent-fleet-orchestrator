@@ -16,6 +16,7 @@ Turns are delimited by ``turn_end`` (or ``error``) lines.
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from collections.abc import AsyncGenerator
@@ -108,7 +109,7 @@ def _load_transcript(path: Path) -> list[list[BackendEvent]]:
             continue  # skip blank lines
         try:
             event = _parse_line(line)
-        except (ValueError, KeyError) as exc:
+        except ValueError as exc:
             raise ValueError(
                 f"{path}:{lineno} — failed to parse JSONL line: {exc!r}\n"
                 f"  line: {line!r}"
@@ -153,6 +154,7 @@ class MockBackend:
             Mutually exclusive with *transcript_path*.
         transcript_path: Path to a JSONL file to load.  Mutually exclusive
             with *transcript*.
+        mock_summary: String returned by summarize(). Defaults to "[mock summary]".
 
     Either *transcript* or *transcript_path* must be provided.
     """
@@ -161,6 +163,7 @@ class MockBackend:
         self,
         transcript: list[list[BackendEvent]] | None = None,
         transcript_path: str | Path | None = None,
+        mock_summary: str = "[mock summary]",
     ) -> None:
         if transcript is not None and transcript_path is not None:
             raise ValueError("Provide transcript or transcript_path, not both.")
@@ -177,8 +180,11 @@ class MockBackend:
             # Defensive copy so callers cannot mutate the shared list
             self._turns = [list(turn) for turn in transcript]
 
+        self._mock_summary = mock_summary
         # session_ref -> _SessionState
         self._sessions: dict[str, _SessionState] = {}
+        # Captures the messages argument from the most recent summarize() call.
+        self.summarize_call_args: list[dict[str, object]] | None = None
 
     # ------------------------------------------------------------------
     # Protocol implementation
@@ -249,3 +255,15 @@ class MockBackend:
     ) -> None:
         """No-op: results are already embedded in the JSONL transcript."""
         return
+
+    async def summarize(
+        self,
+        messages: list[dict[str, object]],
+    ) -> str:
+        """Return the configured mock summary string (no network call).
+
+        Also records *messages* in ``summarize_call_args`` so tests can assert
+        the correct conversation history was passed.
+        """
+        self.summarize_call_args = copy.deepcopy(list(messages))
+        return self._mock_summary
