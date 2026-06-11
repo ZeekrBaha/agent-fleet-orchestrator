@@ -28,13 +28,32 @@ Each archive contains:
    cp /tmp/fleet-restore/fleet.db /var/lib/fleet/fleet.db
    ```
 
-4. **Optionally restore manifests** (only needed if policy files changed):
+4. **Delete stale WAL and SHM files** — SQLite uses WAL mode. If stale
+   `-wal` or `-shm` sidecar files from the old database are left on disk they
+   will be replayed against the freshly restored file, corrupting it. Remove
+   them before restarting Fleet:
+
+   ```bash
+   rm -f /var/lib/fleet/fleet.db-wal /var/lib/fleet/fleet.db-shm
+   ```
+
+5. **Verify the restored DB is internally consistent** — run SQLite's
+   integrity check before restarting Fleet. If this returns anything other
+   than `ok`, do **not** proceed; restore from a different backup:
+
+   ```bash
+   sqlite3 /var/lib/fleet/fleet.db "PRAGMA integrity_check;"
+   ```
+
+   Expected output: `ok`
+
+6. **Optionally restore manifests** (only needed if policy files changed):
 
    ```bash
    cp -r /tmp/fleet-restore/fleet/manifests/ /opt/fleet/fleet/manifests/
    ```
 
-5. **Restart the server**:
+7. **Restart the server** — only after the integrity check returned `ok`:
 
    ```bash
    sudo systemctl start fleet

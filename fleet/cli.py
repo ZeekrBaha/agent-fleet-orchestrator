@@ -198,8 +198,26 @@ def cmd_backup(db_path: str, output_dir: str) -> int:
     with tempfile.TemporaryDirectory() as tmp_str:
         tmp = pathlib.Path(tmp_str)
 
-        # Copy the SQLite DB file.
-        shutil.copy2(db_file, tmp / db_file.name)
+        # Copy the SQLite DB file using the sqlite3 backup API.
+        # shutil.copy2 would miss pages still in the WAL file; sqlite3.backup()
+        # performs a hot online backup that reads committed WAL pages correctly.
+        backup_path = tmp / db_file.name
+        src_conn = sqlite3.connect(str(db_file))
+        dst_conn = sqlite3.connect(str(backup_path))
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
+
+        # Verify the backup is internally consistent.
+        check_conn = sqlite3.connect(str(backup_path))
+        try:
+            result = check_conn.execute("PRAGMA quick_check").fetchone()
+            if result is None or result[0] != "ok":
+                raise RuntimeError(f"Backup integrity check failed: {result}")
+        finally:
+            check_conn.close()
 
         # Copy the manifests directory if it exists.
         if manifests_dir.exists():
