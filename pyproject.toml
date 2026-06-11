@@ -14,7 +14,6 @@ dependencies = [
     "anthropic>=0.30",
     "jinja2>=3.1",
     "sse-starlette>=2.1",
-    "httpx2>=2.3.0",
 ]
 
 [tool.uv]
@@ -38,4 +37,5 @@ python_version = "3.12"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-m 'not live and not slow'"
 markers = ["live: requires real API keys", "slow: long-running"]
