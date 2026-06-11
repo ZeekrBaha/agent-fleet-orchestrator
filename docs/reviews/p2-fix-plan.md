@@ -13,6 +13,13 @@ items and P3 cleanup from `docs/reviews/pr1-review-fixes.md`.
 - B2 (P2-8+9) Schema + timestamp unification — commit `008c626` — 294 tests green
 - B3 (P2-5) Async hygiene sweep — commit `b654b2d` — 304 tests green
 - B4 (P2-6) SSE robustness — commit `e49592f` — 307 tests green
+- B5 (P2-7) Budget enforcement gaps — commit `fd0c354` — 313 tests green
+- B6 (P2-10) Restored sessions lose role — commit `8729cbb` — 316 tests green
+- B7 (P2-11+12) Relay client leak + worktree base-branch drift — commit `69b44da` — 318 tests green
+- C1 API consistency (events limit 422, MergeInProgressError 409, create_task 201) — commit `940e408` — 321 tests green
+- C2 Auth negative regression tests + hibernate transition-only emit — commit `57c63e9` — 330 tests green
+- C3 spawn_worker returns worktree_status degraded/ok/skipped — commit `312a33e` — 333 tests green
+- C4+C5 README endpoint table CI guard, EventType Literal, shared conftest, monkeypatch.setenv — commit `b2bff88` — 334 tests green
 
 **Branch strategy:** merge `fleet/phase-1-scaffold` first. Then one branch per phase
 below (`fleet/p2-security`, `fleet/p2-infra`, `fleet/p3-cleanup`). Do not mix phases
