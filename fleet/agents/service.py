@@ -14,6 +14,7 @@ Public API:
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -32,6 +33,8 @@ from fleet.models import AgentRecord
 if TYPE_CHECKING:
     from fleet.approvals.service import ApprovalService
     from fleet.memory.service import MemoryService
+
+_logger = logging.getLogger(__name__)
 
 
 class AgentService:
@@ -332,8 +335,22 @@ class AgentService:
         Called during graceful shutdown so sessions drain before the DB
         connection is closed.
         """
-        for agent_id in list(self._sessions.keys()):
-            await self._stop_session(agent_id)
+        sessions = list(self._sessions.values())
+        # Cancel all first
+        for s in sessions:
+            if s._task and not s._task.done():
+                s._task.cancel()
+        # Then await all
+        for s in sessions:
+            if s._task:
+                try:
+                    await s._task
+                except asyncio.CancelledError:
+                    # Normal cancellation
+                    pass
+                except Exception as exc:
+                    _logger.warning("session task failed on stop: %s", exc)
+        self._sessions.clear()
 
     # ------------------------------------------------------------------
     # Internal helpers

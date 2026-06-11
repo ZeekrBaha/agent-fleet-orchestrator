@@ -87,25 +87,30 @@ def test_stop_all_method_exists() -> None:
     )
 
 
-async def test_lifespan_calls_stop_all_on_shutdown(tmp_path: pathlib.Path) -> None:
-    """Lifespan teardown must await agent_svc.stop_all()."""
-    os.environ["FLEET_DB_PATH"] = str(tmp_path / "wiring_stop.db")
-    called: list[str] = []
+async def test_lifespan_calls_stop_all_before_manager_close(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Lifespan teardown must call stop_all before manager.close."""
+    os.environ["FLEET_DB_PATH"] = str(tmp_path / "wiring_order.db")
+    call_order: list[str] = []
 
     async def _spy_stop_all(self) -> None:
-        called.append("stop_all")
+        call_order.append("stop_all")
+
+    async def _spy_close(self) -> None:
+        call_order.append("manager.close")
 
     mock_app = MagicMock()
     mock_app.state = SimpleNamespace()
 
     try:
-        # create=True lets the patch work even when stop_all doesn't exist yet
-        with patch.object(AgentService, "stop_all", _spy_stop_all, create=True):
-            async with lifespan(mock_app):
-                pass  # lifespan teardown runs on context exit
+        with patch.object(AgentService, "stop_all", _spy_stop_all):
+            with patch("fleet.db.DatabaseManager.close", _spy_close):
+                async with lifespan(mock_app):
+                    pass  # lifespan teardown runs on context exit
     finally:
         os.environ.pop("FLEET_DB_PATH", None)
 
-    assert "stop_all" in called, (
-        "stop_all was not called during lifespan shutdown"
+    assert call_order == ["stop_all", "manager.close"], (
+        f"Expected [stop_all, manager.close], but got: {call_order}"
     )
