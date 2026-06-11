@@ -197,9 +197,9 @@ class AgentSession:
                         timeout=self._idle_hibernate_s,
                     )
                 except TimeoutError:
-                    # Hibernate: emit waiting state
-                    await self._set_status("waiting")
-                    # Resume on next message (loop back to wait)
+                    # Emit only on first transition into waiting, not every cycle.
+                    if self._status != "waiting":
+                        await self._set_status("waiting")
                     continue
 
                 # After waking from notification, check for a message
