@@ -88,6 +88,7 @@ class EvidenceService:
         *,
         recorded_by: str | None = None,
         recorded_by_role: str | None = None,
+        commit_sha: str | None = None,
     ) -> int:
         """Insert a validation_evidence row. Returns the auto-increment id.
 
@@ -98,6 +99,8 @@ class EvidenceService:
             output:            Command output or summary text.
             recorded_by:       agent_id of the recorder, or None if by a human.
             recorded_by_role:  Authenticated role of the recorder.
+            commit_sha:        Git HEAD SHA of the worktree at evidence-recording time.
+                               Used by check_merge_gate to detect stale evidence.
         """
         ts = datetime.now(UTC).isoformat()
 
@@ -106,9 +109,9 @@ class EvidenceService:
                 text(
                     "INSERT INTO validation_evidence"
                     " (task_id, check_name, status, output, recorded_by,"
-                    "  recorded_by_role, ts)"
+                    "  recorded_by_role, ts, commit_sha)"
                     " VALUES (:task_id, :check_name, :status, :output,"
-                    "         :recorded_by, :recorded_by_role, :ts)"
+                    "         :recorded_by, :recorded_by_role, :ts, :commit_sha)"
                 ),
                 {
                     "task_id": task_id,
@@ -118,6 +121,7 @@ class EvidenceService:
                     "recorded_by": recorded_by,
                     "recorded_by_role": recorded_by_role,
                     "ts": ts,
+                    "commit_sha": commit_sha,
                 },
             )
             conn.commit()
@@ -163,7 +167,7 @@ class EvidenceService:
             rows = conn.execute(
                 text(
                     "SELECT id, task_id, check_name, status, output,"
-                    "  recorded_by, recorded_by_role, ts"
+                    "  recorded_by, recorded_by_role, ts, commit_sha"
                     " FROM validation_evidence"
                     " WHERE task_id = :task_id"
                     " ORDER BY id ASC"
@@ -181,11 +185,16 @@ class EvidenceService:
                 "recorded_by": row.recorded_by,
                 "recorded_by_role": row.recorded_by_role,
                 "ts": row.ts,
+                "commit_sha": row.commit_sha,
             }
             for row in rows
         ]
 
-    async def check_merge_gate(self, task_id: str) -> tuple[bool, str]:
+    async def check_merge_gate(
+        self,
+        task_id: str,
+        branch_sha: str | None = None,
+    ) -> tuple[bool, str]:
         """Check whether a task is ready to merge.
 
         Returns (can_merge, reason).
@@ -193,15 +202,16 @@ class EvidenceService:
           - task exists
           - at least one evidence row exists
           - all evidence rows have status='pass' or status='skip' (none 'fail')
+          - when branch_sha is provided: all evidence rows with a non-null
+            commit_sha must match branch_sha (stale evidence → rejected)
           - when gate_require_reviewer=True: at least one pass evidence row
             recorded by a 'reviewer' role agent that is NOT the task owner
             (prevents self-attestation)
 
-        Reviewer verdict logic:
-          - If a 'review' check row with status='fail' exists → gate fails
-            with reason "reviewer verdict: fail".
-          - If gate_require_reviewer=True and no qualifying reviewer verdict
-            exists → gate fails with "no reviewer verdict from a different agent".
+        Args:
+            task_id:    Task to evaluate.
+            branch_sha: Current branch tip SHA; if provided, evidence recorded
+                        at a different SHA is treated as stale and blocks merge.
         """
         task = await self.get_task(task_id)
         if task is None:
@@ -212,6 +222,24 @@ class EvidenceService:
             return False, "No validation evidence recorded; run checks before merging"
 
         owner_agent_id = str(task.get("owner_agent_id") or "")
+
+        # Staleness check: if branch_sha is known, every evidence row that has
+        # a commit_sha must match it.  A mismatch means new commits landed after
+        # evidence was recorded — the gate cannot trust those results.
+        if branch_sha is not None:
+            stale = [
+                e for e in evidence
+                if e.get("commit_sha") is not None and e["commit_sha"] != branch_sha
+            ]
+            if stale:
+                stale_shas = ", ".join(
+                    str(e["commit_sha"])[:8] for e in stale
+                )
+                return (
+                    False,
+                    f"evidence is stale: recorded at SHA(s) {stale_shas}"
+                    f" but branch tip is {branch_sha[:8]}",
+                )
 
         # Build a map of check_name -> latest row (highest id wins).
         latest: dict[str, dict[str, object]] = {}

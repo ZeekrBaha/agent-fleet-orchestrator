@@ -199,7 +199,15 @@ class MergeService:
 
         # Gate 2: evidence gate
         if task_id:
-            can_merge, reason = await self._evidence_service.check_merge_gate(task_id)
+            try:
+                branch_sha = (
+                    await _agit_run(["git", "rev-parse", "HEAD"], cwd=worktree_path)
+                ).strip()
+            except GitError:
+                branch_sha = None
+            can_merge, reason = await self._evidence_service.check_merge_gate(
+                task_id, branch_sha=branch_sha
+            )
             if not can_merge:
                 return GateStatus(
                     can_merge=False,
@@ -314,7 +322,15 @@ class MergeService:
         if not task_id:
             raise MergeGateError("no task associated with this worktree")
 
-        can_merge, reason = await self._evidence_service.check_merge_gate(task_id)
+        try:
+            branch_sha = (
+                await _agit_run(["git", "rev-parse", "HEAD"], cwd=worktree_path)
+            ).strip()
+        except GitError:
+            branch_sha = None
+        can_merge, reason = await self._evidence_service.check_merge_gate(
+            task_id, branch_sha=branch_sha
+        )
         if not can_merge:
             raise MergeGateError(reason)
 
