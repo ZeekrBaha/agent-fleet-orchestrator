@@ -10,6 +10,7 @@ items and P3 cleanup from `docs/reviews/pr1-review-fixes.md`.
 - A1 (P2-1) Per-agent identity binding — commit `d103d59` — 280 tests green
 - A3 (P2-3) Prompt-injection hardening — commit `50b3dea` — 284 tests green
 - A2 (P2-2) Evidence trust model — commit `e3fef88` — 288 tests green
+- B2 (P2-8+9) Schema + timestamp unification — commit `008c626` — 294 tests green
 
 **Branch strategy:** merge `fleet/phase-1-scaffold` first. Then one branch per phase
 below (`fleet/p2-security`, `fleet/p2-infra`, `fleet/p3-cleanup`). Do not mix phases
@@ -154,7 +155,7 @@ async def migrate(self) -> None:
 bootstraps without re-running 0001; migration with trigger/semicolon-in-literal
 applies correctly; pending `0002` actually runs (the bug 0001-hardcoding hid).
 
-### B2 (P2-8 + P2-9). Schema + timestamp unification (one migration, `0002`)
+### B2 (P2-8 + P2-9). Schema + timestamp unification — DONE `008c626`
 
 - `validation_evidence.task_id` INTEGER → TEXT (matches `tasks.id` uuid). SQLite:
   create-new/copy/drop/rename inside `executescript`.
