@@ -141,6 +141,8 @@ class ClaudeBackend:
         self._system_prompt = system_prompt
         self._max_tokens = max_tokens
         self._sessions: dict[str, _SessionState] = {}
+        # Single async client shared across all calls (non-blocking).
+        self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
 
     # ------------------------------------------------------------------
     # Protocol implementation
@@ -164,15 +166,13 @@ class ClaudeBackend:
     async def send(self, session_ref: str, message: str) -> None:
         """Queue *message* as the next user turn.
 
-        Clears any leftover pending_tool_results from the previous turn and
-        resets the interrupted flag.
+        Resets the interrupted flag. pending_tool_results are intentionally
+        left intact here — events() will flush them into the message history
+        as a user turn before appending the new text message.
         """
         state = self._sessions[session_ref]
         state.pending_message = message
         state.interrupted = False
-        # Tool results from the prior turn were already added to messages;
-        # clear the staging list for the new turn.
-        state.pending_tool_results = []
 
     async def events(
         self, session_ref: str
@@ -191,12 +191,19 @@ class ClaudeBackend:
             yield BackendError("no pending message", retryable=False)
             return
 
+        # Flush any pending tool results as a user turn before the text message.
+        if state.pending_tool_results:
+            state.messages.append(
+                {
+                    "role": "user",
+                    "content": list(state.pending_tool_results),
+                }
+            )
+            state.pending_tool_results.clear()
+
         # Append user message to history
         state.messages.append({"role": "user", "content": state.pending_message})
         state.pending_message = None
-
-        # Build the client fresh each call (stateless HTTP)
-        client = anthropic.Anthropic(api_key=self._api_key)
 
         try:
             # Tool-use accumulation buffer
@@ -218,8 +225,8 @@ class ClaudeBackend:
             if self._system_prompt:
                 stream_kwargs["system"] = self._system_prompt
 
-            with client.messages.stream(**stream_kwargs) as stream:
-                for raw_event in stream:
+            async with self._client.messages.stream(**stream_kwargs) as stream:
+                async for raw_event in stream:
                     if state.interrupted:
                         return
 
@@ -310,7 +317,7 @@ class ClaudeBackend:
                             output_tokens = getattr(usage, "output_tokens", 0)
 
             # Stream complete — record the assistant message in history
-            final_message = stream.get_final_message()
+            final_message = await stream.get_final_message()
             state.messages.append(
                 {"role": "assistant", "content": final_message.content}
             )
@@ -372,6 +379,26 @@ class ClaudeBackend:
             }
         )
 
+    async def reset_history(self, session_ref: str, summary: str) -> None:
+        """Reset the in-memory message history after a compaction cycle.
+
+        Clears the session's message list and, when *summary* is non-empty,
+        re-seeds it with a compact context pair so the model retains awareness
+        of prior work without the full token cost.
+
+        Args:
+            session_ref: The session whose history to reset.
+            summary:     Compacted summary text.  Empty string → just clear.
+        """
+        state = self._sessions.get(session_ref)
+        if state is None:
+            return
+        state.messages.clear()
+        if summary:
+            # Re-seed with the compacted context as an assistant turn.
+            state.messages.append({"role": "user", "content": "[Context compacted]"})
+            state.messages.append({"role": "assistant", "content": summary})
+
     async def summarize(self, messages: list[dict[str, object]]) -> str:
         """Request a condensed summary of *messages* from Claude.
 
@@ -384,8 +411,6 @@ class ClaudeBackend:
         Returns:
             A plain-text summary string from the model.
         """
-        client = anthropic.Anthropic(api_key=self._api_key)
-
         summarise_instruction = (
             "Please provide a concise summary of the conversation above, "
             "capturing the key decisions, findings, and context needed to "
@@ -411,7 +436,7 @@ class ClaudeBackend:
             stream_kwargs["system"] = self._system_prompt
 
         try:
-            response = client.messages.create(**stream_kwargs)
+            response = await self._client.messages.create(**stream_kwargs)
             # Extract text from the first content block
             for block in response.content:
                 if getattr(block, "type", None) == "text":

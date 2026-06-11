@@ -141,3 +141,15 @@ class AgentBackend(Protocol):
             A plain-text summary string.
         """
         ...
+
+    async def reset_history(self, session_ref: str, summary: str) -> None:
+        """Reset the in-memory message history after a compaction cycle.
+
+        Clears the backend's per-session message list and optionally re-seeds
+        it with a compact context derived from *summary*.
+
+        Args:
+            session_ref: The session whose history to reset.
+            summary:     Compacted summary text.  Empty string → just clear.
+        """
+        ...

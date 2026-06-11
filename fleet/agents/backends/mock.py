@@ -267,3 +267,11 @@ class MockBackend:
         """
         self.summarize_call_args = copy.deepcopy(list(messages))
         return self._mock_summary
+
+    async def reset_history(  # noqa: ARG002
+        self,
+        session_ref: str,
+        summary: str,
+    ) -> None:
+        """No-op: MockBackend does not maintain a real message history."""
+        return

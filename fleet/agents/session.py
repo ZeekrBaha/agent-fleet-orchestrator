@@ -267,6 +267,9 @@ class AgentSession:
         summary = await self._backend.summarize(messages)
         # Clear history after compaction so it doesn't grow unbounded.
         self._conversation_history.clear()
+        # Reset the backend's in-memory message list so it doesn't keep growing.
+        if self._session_ref is not None:
+            await self._backend.reset_history(self._session_ref, summary)
 
         memory_id = await self._memory_svc.write(
             agent_id=self._agent_id,
