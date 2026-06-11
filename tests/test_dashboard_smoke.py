@@ -168,16 +168,11 @@ class _LiveServer:
 @pytest.fixture
 def seeded_db(tmp_path: pathlib.Path) -> str:
     """Create a seeded SQLite DB for smoke tests and return its path."""
-    from sqlalchemy import create_engine
-
     from fleet.dashboard.seed import seed_test_db
     from fleet.db import run_migrations
 
     db_path = str(tmp_path / "smoke_test.db")
-    engine = create_engine(f"sqlite:///{db_path}")
-    with engine.connect() as conn:
-        run_migrations(conn)
-    engine.dispose()
+    run_migrations(db_path)
 
     seed_test_db(db_path)
     return db_path
@@ -186,15 +181,10 @@ def seeded_db(tmp_path: pathlib.Path) -> str:
 @pytest.fixture
 def empty_db(tmp_path: pathlib.Path) -> str:
     """Create an empty (schema-only) SQLite DB for empty-state tests."""
-    from sqlalchemy import create_engine
-
     from fleet.db import run_migrations
 
     db_path = str(tmp_path / "empty_test.db")
-    engine = create_engine(f"sqlite:///{db_path}")
-    with engine.connect() as conn:
-        run_migrations(conn)
-    engine.dispose()
+    run_migrations(db_path)
     return db_path
 
 

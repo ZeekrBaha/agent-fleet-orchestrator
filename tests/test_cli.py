@@ -24,11 +24,9 @@ def _migration_sql() -> str:
 
 
 def _create_db(path: Path) -> None:
-    """Create a test DB by executing the migration SQL."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(_migration_sql())
-    conn.commit()
-    conn.close()
+    """Create a test DB via the migration framework (schema_migrations tracked)."""
+    from fleet.db import run_migrations
+    run_migrations(str(path))
 
 
 def _run_doctor(db_path: Path) -> subprocess.CompletedProcess[str]:
@@ -154,6 +152,40 @@ class TestDoctorStuckAgent:
         assert result.returncode == 1
         assert "[WARN]" in result.stdout
         assert "Stuck" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Migration doctor tests (RED — written before _check_migrations exists)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorMigrationStatus:
+    """Doctor reports migration tracking status."""
+
+    def test_doctor_migrations_ok_when_all_applied(self, tmp_path: Path) -> None:
+        """Fully-migrated DB → [OK] for Migrations, shows applied count."""
+        db = tmp_path / "fleet.db"
+        _create_db(db)
+
+        result = _run_doctor(db)
+
+        assert "Migrations" in result.stdout
+        assert result.returncode == 0
+        assert "[WARN]" not in result.stdout
+
+    def test_doctor_migrations_warn_when_untracked(self, tmp_path: Path) -> None:
+        """Pre-framework DB (no schema_migrations table) → [WARN] for Migrations."""
+        db = tmp_path / "fleet.db"
+        # Create DB the old way: no schema_migrations table
+        raw = sqlite3.connect(str(db))
+        raw.executescript(_migration_sql())
+        raw.close()
+
+        result = _run_doctor(db)
+
+        assert "Migrations" in result.stdout
+        assert "[WARN]" in result.stdout
+        assert result.returncode == 1
 
 
 # ---------------------------------------------------------------------------

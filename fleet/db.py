@@ -4,11 +4,12 @@ All writes are serialised through one asyncio.Queue consumed by a dedicated
 background task.  Read connections are handed out freely.
 
 Public API:
-    init_db(db_path)          -> DatabaseManager
-    DatabaseManager.write(op) -> awaitable, returns op's return value
-    DatabaseManager.read_connection() -> context manager yielding Connection
-    DatabaseManager.close()   -> drains queue, stops writer, closes engine
-    run_migrations(conn)      -> idempotent DDL execution (also called internally)
+    init_db(db_path, *, migrations_dir)  -> DatabaseManager
+    DatabaseManager.write(op)            -> awaitable, returns op's return value
+    DatabaseManager.read_connection()    -> context manager yielding Connection
+    DatabaseManager.close()              -> drains queue, stops writer, closes engine
+    run_migrations(db_path, *, migrations_dir) -> idempotent, tracks applied versions
+    MIGRATIONS_DIR                       -> Path to bundled migration files
 """
 
 from __future__ import annotations
@@ -16,18 +17,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import pathlib
+import sqlite3
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
-from sqlalchemy import Connection, create_engine, event, text
+from sqlalchemy import Connection, create_engine, event
 from sqlalchemy.engine import Engine
 
 T = TypeVar("T")
 
-# Path to the bundled migration file.
-_MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
-_INIT_SQL = _MIGRATIONS_DIR / "0001_init.sql"
+# Public constant: path to bundled migration files.
+MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
 
 
 # ---------------------------------------------------------------------------
@@ -71,19 +73,68 @@ def _apply_pragmas(dbapi_conn: Any, _connection_record: Any) -> None:  # noqa: A
 # ---------------------------------------------------------------------------
 
 
-def run_migrations(conn: Connection) -> None:
-    """Execute the DDL migration file against *conn*.
+def _utcnow_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
-    Idempotent: all statements use ``CREATE TABLE IF NOT EXISTS``.
+
+def run_migrations(
+    db_path: str,
+    *,
+    migrations_dir: pathlib.Path | None = None,
+) -> None:
+    """Apply all pending migrations in sorted order; idempotent on repeated calls.
+
+    Uses ``sqlite3.executescript()`` to correctly handle triggers and
+    semicolons inside string literals (avoids naive ``split(';')``).
+
+    Tracks applied versions in a ``schema_migrations`` table.
+
+    Bootstrap: if ``schema_migrations`` is absent but the ``agents`` table
+    exists (pre-framework DB), records ``0001_init`` as applied without
+    re-running it, then continues with any pending migrations above 0001.
     """
-    sql = _INIT_SQL.read_text(encoding="utf-8")
-    # Split on semicolons so each statement is executed individually;
-    # this avoids driver-level "multiple statements" restrictions.
-    for statement in sql.split(";"):
-        stripped = statement.strip()
-        if stripped:
-            conn.execute(text(stripped))
-    conn.commit()
+    mdir = migrations_dir if migrations_dir is not None else MIGRATIONS_DIR
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS schema_migrations "
+            "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        conn.commit()
+
+        applied: set[str] = {
+            row[0] for row in conn.execute("SELECT version FROM schema_migrations")
+        }
+
+        # Bootstrap: pre-framework DB has core tables but no recorded versions.
+        if not applied:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = {r[0] for r in rows}
+            if "agents" in tables:
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations VALUES (?, ?)",
+                    ("0001_init", _utcnow_iso()),
+                )
+                conn.commit()
+                _rows = conn.execute("SELECT version FROM schema_migrations")
+                applied = {row[0] for row in _rows}
+
+        for path in sorted(mdir.glob("[0-9]*.sql")):
+            version = path.stem
+            if version in applied:
+                continue
+            conn.executescript(path.read_text(encoding="utf-8"))
+            conn.execute(
+                "INSERT INTO schema_migrations VALUES (?, ?)",
+                (version, _utcnow_iso()),
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -206,16 +257,19 @@ class DatabaseManager:
 # ---------------------------------------------------------------------------
 
 
-async def init_db(db_path: str) -> DatabaseManager:
+async def init_db(
+    db_path: str,
+    *,
+    migrations_dir: pathlib.Path | None = None,
+) -> DatabaseManager:
     """Create the DB, run migrations, start the writer task.
 
     Returns a ready-to-use ``DatabaseManager``.
     """
     engine = _make_engine(db_path)
 
-    # Run migrations synchronously (called once at startup — not a hot path).
-    with engine.connect() as conn:
-        run_migrations(conn)
+    # Run migrations synchronously via raw sqlite3 (startup, not a hot path).
+    run_migrations(db_path, migrations_dir=migrations_dir)
 
     manager = DatabaseManager(engine)
     manager._start_writer()

@@ -7,12 +7,14 @@ Run load test:   uv run pytest tests/test_db.py -q -m "slow" -v
 from __future__ import annotations
 
 import asyncio
+import pathlib
+import sqlite3 as _sqlite3
 import time
 from datetime import UTC, datetime
 
 import pytest
 
-from fleet.db import DatabaseManager, init_db
+from fleet.db import MIGRATIONS_DIR, DatabaseManager, init_db
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,8 +64,7 @@ async def test_migration_idempotent(tmp_path):
         # run_migrations is called internally by init_db; call it again explicitly
         from fleet.db import run_migrations
 
-        with db.read_connection() as conn:
-            run_migrations(conn)
+        run_migrations(db_path)  # second call must be a no-op
         # No exception means idempotent
     finally:
         await db.close()
@@ -202,3 +203,157 @@ async def test_load_25_producers_200_events(tmp_path):
         assert p95 <= 5.0, f"p95 latency {p95:.3f} ms exceeds 5 ms limit"
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------------------
+# B1: Migration framework tests (RED — written before implementation)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_migration_schema_tracking_table_created(tmp_path: pathlib.Path) -> None:
+    """init_db creates schema_migrations tracking table on a fresh DB."""
+    db_path = str(tmp_path / "fleet.db")
+    db = await init_db(db_path)
+    await db.close()
+
+    raw = _sqlite3.connect(db_path)
+    try:
+        rows = raw.execute(
+            "SELECT name FROM sqlite_master WHERE name='schema_migrations'"
+        ).fetchall()
+    finally:
+        raw.close()
+    assert rows, "schema_migrations table must exist after init_db"
+
+
+@pytest.mark.asyncio
+async def test_migration_records_applied_versions(tmp_path: pathlib.Path) -> None:
+    """Fresh DB: 0001_init is recorded in schema_migrations after init_db."""
+    db_path = str(tmp_path / "fleet.db")
+    db = await init_db(db_path)
+    await db.close()
+
+    raw = _sqlite3.connect(db_path)
+    try:
+        versions = [r[0] for r in raw.execute("SELECT version FROM schema_migrations")]
+    finally:
+        raw.close()
+    assert "0001_init" in versions
+
+
+@pytest.mark.asyncio
+async def test_migration_rerun_no_duplicate_records(tmp_path: pathlib.Path) -> None:
+    """init_db called twice on same DB does not duplicate schema_migrations rows."""
+    db_path = str(tmp_path / "fleet.db")
+    db1 = await init_db(db_path)
+    await db1.close()
+    db2 = await init_db(db_path)
+    await db2.close()
+
+    raw = _sqlite3.connect(db_path)
+    try:
+        count = raw.execute(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version='0001_init'"
+        ).fetchone()[0]
+    finally:
+        raw.close()
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_migration_bootstrap_pre_framework_db(tmp_path: pathlib.Path) -> None:
+    """Pre-framework DB (no schema_migrations): bootstraps without re-running 0001."""
+    db_path = str(tmp_path / "fleet.db")
+    # Simulate a pre-framework DB: apply init SQL with raw sqlite3 only
+    init_sql = (MIGRATIONS_DIR / "0001_init.sql").read_text()
+    raw = _sqlite3.connect(db_path)
+    raw.executescript(init_sql)
+    raw.close()
+
+    # Confirm no schema_migrations table yet
+    raw = _sqlite3.connect(db_path)
+    rows = raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {r[0] for r in rows}
+    raw.close()
+    assert "schema_migrations" not in tables, "pre-condition: no schema_migrations yet"
+
+    # init_db should bootstrap gracefully
+    db = await init_db(db_path)
+    await db.close()
+
+    raw = _sqlite3.connect(db_path)
+    try:
+        versions = [r[0] for r in raw.execute("SELECT version FROM schema_migrations")]
+    finally:
+        raw.close()
+    assert "0001_init" in versions
+
+
+@pytest.mark.asyncio
+async def test_migration_custom_dir_applies_pending(tmp_path: pathlib.Path) -> None:
+    """A pending migration file in a custom migrations_dir is applied on init_db."""
+    mdir = tmp_path / "migrations"
+    mdir.mkdir()
+    # Minimal 0001 with agents table so bootstrap detection works
+    (mdir / "0001_init.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL);\n"
+        "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY);\n"
+    )
+    # Pending 0002
+    (mdir / "0002_marker.sql").write_text(
+        "CREATE TABLE migration_marker (id INTEGER PRIMARY KEY);\n"
+    )
+
+    db_path = str(tmp_path / "fleet.db")
+    db = await init_db(db_path, migrations_dir=mdir)
+    await db.close()
+
+    raw = _sqlite3.connect(db_path)
+    try:
+        versions = [
+            r[0] for r in raw.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+        _tbl_rows = raw.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r[0] for r in _tbl_rows}
+    finally:
+        raw.close()
+
+    assert "0001_init" in versions
+    assert "0002_marker" in versions
+    assert "migration_marker" in tables
+
+
+@pytest.mark.asyncio
+async def test_migration_trigger_with_semicolon_applies(tmp_path: pathlib.Path) -> None:
+    """Migration containing a trigger (semicolons in body) applies without error."""
+    mdir = tmp_path / "migrations"
+    mdir.mkdir()
+    (mdir / "0001_init.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL);\n"
+        "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY);\n"
+    )
+    (mdir / "0002_trigger.sql").write_text(
+        "CREATE TRIGGER IF NOT EXISTS trg_test AFTER INSERT ON agents\n"
+        "BEGIN\n"
+        "  SELECT CASE WHEN 1=0 THEN 'semi;colon' ELSE 'ok' END;\n"
+        "END;\n"
+    )
+
+    db_path = str(tmp_path / "fleet.db")
+    db = await init_db(db_path, migrations_dir=mdir)
+    await db.close()
+
+    raw = _sqlite3.connect(db_path)
+    try:
+        triggers = {r[0] for r in raw.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        )}
+        versions = [r[0] for r in raw.execute("SELECT version FROM schema_migrations")]
+    finally:
+        raw.close()
+
+    assert "trg_test" in triggers
+    assert "0002_trigger" in versions

@@ -128,6 +128,36 @@ def _check_merge_lock() -> _CheckResult:
         )
 
 
+def _check_migrations(conn: sqlite3.Connection) -> _CheckResult:
+    """Check (f): applied vs pending migrations."""
+    from fleet.db import MIGRATIONS_DIR  # noqa: PLC0415
+
+    tables = {
+        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if "schema_migrations" not in tables:
+        return _CheckResult(
+            "WARN",
+            "Migrations",
+            "schema_migrations table absent — run fleet init or init_db to bootstrap",
+        )
+
+    applied = {r[0] for r in conn.execute("SELECT version FROM schema_migrations")}
+    available = {p.stem for p in MIGRATIONS_DIR.glob("[0-9]*.sql")}
+    pending = sorted(available - applied)
+
+    if pending:
+        return _CheckResult(
+            "WARN",
+            "Migrations",
+            f"{len(pending)} pending: {', '.join(pending)}",
+        )
+    return _CheckResult(
+        "OK",
+        "Migrations",
+        f"all applied ({len(applied)})",
+    )
+
 
 def _format_age(ts: str | None) -> str:
     """Return a human-readable age string like '2h15m' for an ISO timestamp."""
@@ -163,6 +193,7 @@ def cmd_doctor(db_path: str) -> int:
             _check_event_storm(conn),
             _check_stuck_agents(conn),
             _check_merge_lock(),
+            _check_migrations(conn),
         ]
     finally:
         conn.close()
