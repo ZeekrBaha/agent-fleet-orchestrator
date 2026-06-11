@@ -258,16 +258,31 @@ All endpoints require `Authorization: Bearer <FLEET_API_TOKEN>`.
 |--------|------|-------------|
 | `POST` | `/api/agents` | Create agent |
 | `GET` | `/api/agents` | List agents |
-| `GET` | `/api/agents/{id}` | Get agent |
-| `DELETE` | `/api/agents/{id}` | Terminate agent |
-| `POST` | `/api/agents/{id}/message` | Send message |
-| `GET` | `/api/agents/{id}/events` | SSE stream |
+| `GET` | `/api/agents/{agent_id}` | Get agent |
+| `DELETE` | `/api/agents/{agent_id}` | Terminate agent |
+| `POST` | `/api/agents/{agent_id}/messages` | Send message to agent |
+| `POST` | `/api/agents/{agent_id}/interrupt` | Interrupt running turn |
 | `GET` | `/api/events` | Query event log |
-| `POST` | `/api/merge/{id}/request` | Request merge (evidence-gated) |
+| `POST` | `/api/events` | Append event |
+| `GET` | `/api/events/stream` | SSE live event stream |
+| `POST` | `/api/merge/{worktree_id}` | Execute merge (evidence-gated) |
+| `GET` | `/api/merge/{worktree_id}/check` | Check merge-gate status |
 | `GET` | `/api/approvals` | List pending approvals |
-| `POST` | `/api/approvals/{id}/decide` | Approve or deny |
-| `POST` | `/api/tools/{tool}` | MCP tool relay (used by tool server) |
-| `GET` | `/api/review/{id}` | Reviewer verdict |
+| `POST` | `/api/approvals/{approval_id}/decide` | Approve or deny |
+| `POST` | `/api/tools/{tool_name}` | MCP tool relay (agent tool calls) |
+| `POST` | `/api/review/tasks` | Create review task |
+| `GET` | `/api/review/tasks/{task_id}` | Get review task |
+| `GET` | `/api/review/tasks/{task_id}/evidence` | List evidence rows |
+| `GET` | `/api/review/tasks/{task_id}/gate` | Check merge gate |
+| `GET` | `/api/workspaces` | List repositories |
+| `POST` | `/api/workspaces` | Register repository |
+| `GET` | `/api/workspaces/{repo_id}` | Get repository |
+| `DELETE` | `/api/workspaces/{repo_id}` | Remove repository |
+| `GET` | `/api/workspaces/{repo_id}/worktrees` | List worktrees |
+| `POST` | `/api/workspaces/{repo_id}/worktrees` | Create worktree |
+| `DELETE` | `/api/workspaces/{repo_id}/worktrees/{worktree_id}` | Remove worktree |
+| `GET` | `/api/workspaces/{repo_id}/worktrees/{worktree_id}/wip` | Get WIP diff |
+| `POST` | `/api/workspaces/{repo_id}/dirty-action` | Stash or reset dirty repo |
 
 Errors follow RFC 7807: `{ "type": ..., "title": ..., "detail": ..., "status": ... }`.
 

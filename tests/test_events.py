@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -314,7 +313,9 @@ async def test_get_events_endpoint(app_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_auth_rejects_missing_token(tmp_path: pytest.TempPathFactory) -> None:
+async def test_auth_rejects_missing_token(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Without auth override, missing Bearer token → 401."""
     from fleet.api.events import router
     from fleet.events.service import create_event_service
@@ -334,7 +335,7 @@ async def test_auth_rejects_missing_token(tmp_path: pytest.TempPathFactory) -> N
 
     test_token = secrets.token_hex(16)
     get_settings.cache_clear()
-    os.environ["FLEET_API_TOKEN"] = test_token
+    monkeypatch.setenv("FLEET_API_TOKEN", test_token)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -345,13 +346,14 @@ async def test_auth_rejects_missing_token(tmp_path: pytest.TempPathFactory) -> N
             )
             assert resp.status_code == 401
     finally:
-        del os.environ["FLEET_API_TOKEN"]
         get_settings.cache_clear()
         await manager.close()
 
 
 @pytest.mark.asyncio
-async def test_auth_accepts_correct_token(tmp_path: pytest.TempPathFactory) -> None:
+async def test_auth_accepts_correct_token(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Correct Bearer token → 200."""
     from fleet.api.events import router
     from fleet.events.service import create_event_service
@@ -370,7 +372,7 @@ async def test_auth_accepts_correct_token(tmp_path: pytest.TempPathFactory) -> N
 
     test_token = secrets.token_hex(16)
     get_settings.cache_clear()
-    os.environ["FLEET_API_TOKEN"] = test_token
+    monkeypatch.setenv("FLEET_API_TOKEN", test_token)
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -382,7 +384,6 @@ async def test_auth_accepts_correct_token(tmp_path: pytest.TempPathFactory) -> N
             )
             assert resp.status_code == 200
     finally:
-        del os.environ["FLEET_API_TOKEN"]
         get_settings.cache_clear()
         await manager.close()
 

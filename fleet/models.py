@@ -20,6 +20,23 @@ AgentStatus = Literal[
 WorktreeStatus = Literal["active", "merged", "removed"]
 InboxStatus = Literal["pending", "delivered", "failed"]
 ApprovalStatus = Literal["pending", "approved", "denied"]
+
+# Exhaustive set of event type strings written to the events table.
+# Use this type annotation on event_service.append() callers to catch typos
+# at static-analysis time rather than at runtime.
+EventType = Literal[
+    "state_change",
+    "error",
+    "tool_call",
+    "tool_result",
+    "tool_result_error",
+    "agent_message",
+    "admin_impersonation",
+    "budget_exceeded",
+    "budget_alert",
+    "merge_result",
+    "review_verdict",
+]
 MemoryKind = Literal[
     "architecture_decision",
     "known_bug",
