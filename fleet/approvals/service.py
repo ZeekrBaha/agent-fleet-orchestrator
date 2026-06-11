@@ -214,8 +214,11 @@ class ApprovalService:
         """
         waiter = self._waiters.get(approval_id)
         if waiter is None:
-            # Approval might not have been created by this process instance
-            # (restart scenario); create a fresh event and check DB immediately.
+            # Restart scenario: check DB immediately before blocking — the
+            # decision may have arrived while this process was down.
+            record = await self.get(approval_id)
+            if record is not None and record.status in ("approved", "denied"):
+                return "approve" if record.status == "approved" else "deny"
             waiter = asyncio.Event()
             self._waiters[approval_id] = waiter
 

@@ -342,7 +342,11 @@ class AgentService:
                     if recent:
                         prior_context = recent[-1].content
                 self._start_session(
-                    agent_id, scope, backend, prior_context=prior_context
+                    agent_id,
+                    scope,
+                    backend,
+                    prior_context=prior_context,
+                    role=row.role,
                 )
 
     async def stop_all(self) -> None:

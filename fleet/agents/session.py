@@ -87,6 +87,7 @@ class AgentSession:
         self._resume_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
+        self._role = role
         self._budget = budget
         self._approval_svc = approval_svc
         self._memory_svc = memory_svc
