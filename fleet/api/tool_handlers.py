@@ -140,6 +140,8 @@ async def _handle_spawn_worker(
 
     # Create a worktree for this task when worktree_svc and task_id are available.
     worktree_svc = svcs.get("worktree_svc")
+    worktree_status: str
+    worktree_error: str | None = None
     if worktree_svc is not None and inp.task_id and inp.repository_id:
         try:
             worktree = await worktree_svc.create_worktree(
@@ -150,16 +152,19 @@ async def _handle_spawn_worker(
                 owned_paths=inp.owned_paths,
             )
             await agent_svc.set_worktree_id(agent_id, worktree.id)
+            worktree_status = "ok"
         except (WorktreeError, DirtyRepoError, OverlapError, ValueError) as exc:
-            # Non-fatal: worktree creation failure does not block agent spawn.
-            # Emit an error event so the failure is audited.
+            worktree_error = str(exc)
+            worktree_status = "degraded"
             await event_svc.append(
                 inp.scope,
                 "error",
                 f"Worktree creation failed for agent {agent_id}: {exc}",
                 agent_id=agent_id,
-                payload={"error": str(exc), "action": "worktree_create_failed"},
+                payload={"error": worktree_error, "action": "worktree_create_failed"},
             )
+    else:
+        worktree_status = "skipped"
 
     # Emit task_created state_change event (action="spawn" feeds the rate limiter).
     await event_svc.append(
@@ -170,7 +175,15 @@ async def _handle_spawn_worker(
         payload={"task_id": inp.task_id, "name": inp.name, "action": "spawn"},
     )
 
-    return {"agent_id": agent_id, "name": record.name, "status": record.status}
+    result: dict[str, object] = {
+        "agent_id": agent_id,
+        "name": record.name,
+        "status": record.status,
+        "worktree_status": worktree_status,
+    }
+    if worktree_error is not None:
+        result["worktree_error"] = worktree_error
+    return result
 
 
 async def _handle_send_message(
