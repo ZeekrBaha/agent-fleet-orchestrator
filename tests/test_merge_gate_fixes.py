@@ -232,13 +232,17 @@ async def test_p1_9_merge_fails_wrong_head(
     task_id = await evidence_svc.create_task(
         scope="test", title="wrong head task", description="desc", branch=branch
     )
-    await evidence_svc.record_evidence(task_id, "pytest", "pass", "ok")
 
     wt_path = tmp_path / "wt_wrong_head"
     worktree_add(repo, wt_path, branch)
     (wt_path / "work.txt").write_text("work\n")
     _git(["add", "work.txt"], cwd=wt_path)
     _git(["commit", "-m", "work"], cwd=wt_path)
+    from fleet.workspace.gitops import git_run as _git_run
+    wt_sha = _git_run(["git", "rev-parse", "HEAD"], cwd=wt_path).strip()
+    await evidence_svc.record_evidence(
+        task_id, "pytest", "pass", "ok", commit_sha=wt_sha
+    )
 
     # Leave repo HEAD on a non-main branch
     _git(["checkout", "-b", "some-other-branch"], cwd=repo)
@@ -286,13 +290,17 @@ async def test_p1_9_merge_fails_dirty_main_repo(
     task_id = await evidence_svc.create_task(
         scope="test", title="dirty main", description="desc", branch=branch
     )
-    await evidence_svc.record_evidence(task_id, "pytest", "pass", "ok")
 
     wt_path = tmp_path / "wt_dirty_main"
     worktree_add(repo, wt_path, branch)
     (wt_path / "work.txt").write_text("work\n")
     _git(["add", "work.txt"], cwd=wt_path)
     _git(["commit", "-m", "work"], cwd=wt_path)
+    from fleet.workspace.gitops import git_run as _git_run
+    wt_sha = _git_run(["git", "rev-parse", "HEAD"], cwd=wt_path).strip()
+    await evidence_svc.record_evidence(
+        task_id, "pytest", "pass", "ok", commit_sha=wt_sha
+    )
 
     # Make main repo dirty (uncommitted change)
     (repo / "dirty.txt").write_text("dirty\n")
@@ -873,13 +881,16 @@ async def test_p1_11_cleanup_on_merge_failure(
     task_id = await evidence_svc.create_task(
         scope="test", title="cleanup task", description="desc", branch=branch
     )
-    await evidence_svc.record_evidence(task_id, "pytest", "pass", "ok")
 
     wt_path = tmp_path / "wt_cleanup"
     worktree_add(repo, wt_path, branch)
     (wt_path / "cleanup.txt").write_text("cleanup\n")
     _git(["add", "cleanup.txt"], cwd=wt_path)
     _git(["commit", "-m", "cleanup work"], cwd=wt_path)
+    wt_sha = git_run(["git", "rev-parse", "HEAD"], cwd=wt_path).strip()
+    await evidence_svc.record_evidence(
+        task_id, "pytest", "pass", "ok", commit_sha=wt_sha
+    )
 
     worktree_id = str(uuid.uuid4())
     await _setup_worktree_with_task(

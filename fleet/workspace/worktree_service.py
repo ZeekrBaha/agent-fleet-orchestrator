@@ -458,6 +458,10 @@ class WorktreeService:
             " Valid: continue_dirty, stash, commit, cancel"
         )
 
+    async def get_worktree(self, worktree_id: str) -> WorktreeRecord | None:
+        """Return a single worktree record by ID, or None if not found."""
+        return await self._get_worktree(worktree_id)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

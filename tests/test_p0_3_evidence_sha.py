@@ -11,7 +11,6 @@ Tests (TDD-first):
 from __future__ import annotations
 
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +20,6 @@ from sqlalchemy import text
 
 from fleet.db import DatabaseManager, init_db
 from fleet.review.evidence import EvidenceService
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -59,7 +57,8 @@ def _make_git_repo(path: Path) -> None:
 
 def _git_head(path: Path) -> str:
     result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=path, check=True, capture_output=True, text=True
     )
     return result.stdout.strip()
 

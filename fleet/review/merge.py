@@ -203,8 +203,13 @@ class MergeService:
                 branch_sha = (
                     await _agit_run(["git", "rev-parse", "HEAD"], cwd=worktree_path)
                 ).strip()
-            except GitError:
-                branch_sha = None
+            except GitError as exc:
+                return GateStatus(
+                    can_merge=False,
+                    reason=f"cannot determine branch SHA for staleness check: {exc}",
+                    has_conflict=False,
+                    conflict_summary="",
+                )
             can_merge, reason = await self._evidence_service.check_merge_gate(
                 task_id, branch_sha=branch_sha
             )
@@ -326,8 +331,10 @@ class MergeService:
             branch_sha = (
                 await _agit_run(["git", "rev-parse", "HEAD"], cwd=worktree_path)
             ).strip()
-        except GitError:
-            branch_sha = None
+        except GitError as exc:
+            raise MergeGateError(
+                f"cannot determine branch SHA for staleness check: {exc}"
+            ) from exc
         can_merge, reason = await self._evidence_service.check_merge_gate(
             task_id, branch_sha=branch_sha
         )

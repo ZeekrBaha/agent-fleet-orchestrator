@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -37,6 +39,7 @@ from fleet.api.tool_schemas import (
     WorkerWipInput,
 )
 from fleet.policy.service import PolicyDenied
+from fleet.workspace.gitops import GitError, git_run
 from fleet.workspace.worktree_service import DirtyRepoError, OverlapError, WorktreeError
 
 # Per-scope asyncio.Lock to serialize spawn-cap checks (P1-20 TOCTOU fix).
@@ -293,6 +296,31 @@ async def _handle_record_validation(
     calling_agent = svcs.get("_calling_agent")
     calling_role: str = calling_agent.role if calling_agent is not None else ""
 
+    # Resolve the calling agent's worktree HEAD SHA (server-side, not caller-supplied).
+    commit_sha: str | None = None
+    worktree_svc = svcs.get("worktree_svc")
+    if (
+        calling_agent is not None
+        and calling_agent.worktree_id is not None
+        and worktree_svc is not None
+    ):
+        worktree = await worktree_svc.get_worktree(calling_agent.worktree_id)
+        if worktree is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                commit_sha = (
+                    await loop.run_in_executor(
+                        None,
+                        partial(
+                            git_run,
+                            ["git", "rev-parse", "HEAD"],
+                            cwd=Path(worktree.path),
+                        ),
+                    )
+                ).strip()
+            except GitError:
+                commit_sha = None
+
     row_id: int = await evidence_svc.record_evidence(
         task_id=inp.task_id,
         check_name=inp.check_name,
@@ -302,6 +330,7 @@ async def _handle_record_validation(
             svcs.get("_authenticated_agent_id") or inp.agent_id
         ),
         recorded_by_role=calling_role if calling_role else None,
+        commit_sha=commit_sha,
     )
     if inp.check_name == "review" and calling_role == "reviewer":
         event_svc = svcs.get("event_svc")

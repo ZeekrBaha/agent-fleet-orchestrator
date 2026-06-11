@@ -409,12 +409,15 @@ async def test_merge_gate_conflict_rejected(
         ).fetchone()
     assert row is not None
     conflict_task_id = row.id
-    await evidence_svc.record_evidence(conflict_task_id, "pytest", "pass", "ok")
 
     # Make a clean copy of the repo on the feature branch (no uncommitted changes)
     wt_real = tmp_path / "wt_conflict"
     shutil.copytree(repo, wt_real)
     _git(["checkout", "feature"], cwd=wt_real)
+    wt_sha = git_run(["git", "rev-parse", "HEAD"], cwd=wt_real).strip()
+    await evidence_svc.record_evidence(
+        conflict_task_id, "pytest", "pass", "ok", commit_sha=wt_sha
+    )
 
     worktree_id = str(uuid.uuid4())
     await _setup_worktree(
@@ -483,13 +486,16 @@ async def test_merge_gate_success(
         ).fetchone()
     assert row is not None
     task_id = row.id
-    await evidence_svc.record_evidence(task_id, "pytest", "pass", "all pass")
 
     wt_path = tmp_path / "wt_success"
     worktree_add(repo, wt_path, branch)
     (wt_path / "feature_file.txt").write_text("feature work\n")
     _git(["add", "feature_file.txt"], cwd=wt_path)
     _git(["commit", "-m", "add feature file"], cwd=wt_path)
+    wt_sha = git_run(["git", "rev-parse", "HEAD"], cwd=wt_path).strip()
+    await evidence_svc.record_evidence(
+        task_id, "pytest", "pass", "all pass", commit_sha=wt_sha
+    )
 
     worktree_id = str(uuid.uuid4())
     await _setup_worktree(
@@ -712,7 +718,7 @@ async def test_merge_lock_concurrent_http(
     tmp_path: Any,
 ) -> None:
     """Two concurrent POST /api/merge requests on the same scope: one 200, one 409."""
-    from fleet.workspace.gitops import worktree_add
+    from fleet.workspace.gitops import git_run, worktree_add
     from tests.fixtures.gitrepo import _git
 
     repo = repo_factory.make_clean("repo_concurrent")
@@ -731,13 +737,16 @@ async def test_merge_lock_concurrent_http(
         ).fetchone()
     assert row is not None
     task_id = row.id
-    await evidence_svc.record_evidence(task_id, "pytest", "pass", "all pass")
 
     wt_path = tmp_path / "wt_concurrent"
     worktree_add(repo, wt_path, branch)
     (wt_path / "feature_file.txt").write_text("feature work\n")
     _git(["add", "feature_file.txt"], cwd=wt_path)
     _git(["commit", "-m", "add feature file"], cwd=wt_path)
+    wt_sha = git_run(["git", "rev-parse", "HEAD"], cwd=wt_path).strip()
+    await evidence_svc.record_evidence(
+        task_id, "pytest", "pass", "all pass", commit_sha=wt_sha
+    )
 
     worktree_id = str(uuid.uuid4())
     await _setup_worktree(

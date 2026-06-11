@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from fleet.agents.budget import BudgetAction, BudgetEnforcer
 from fleet.agents.backends.protocol import TurnEnd
+from fleet.agents.budget import BudgetAction, BudgetEnforcer
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService
 from fleet.events.sse import SSEHub

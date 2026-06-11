@@ -34,7 +34,6 @@ from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService
 from fleet.events.sse import SSEHub
 
-
 _IDENTITY_MANIFEST = os.path.join(
     os.path.dirname(__file__), "manifests", "identity_test.yaml"
 )
@@ -133,7 +132,9 @@ async def test_tool_call_events_carry_authenticated_agent_id(
     Verifies that dispatch_tool injects _authenticated_agent_id into svcs
     and that the audit events around the handler use that identity.
     """
-    _insert_agent(db_path, agent_id="orch-p02", role="orchestrator", plaintext_token="tok-p02")
+    _insert_agent(
+        db_path, agent_id="orch-p02", role="orchestrator", plaintext_token="tok-p02"
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=tool_app), base_url="http://test"

@@ -227,9 +227,11 @@ class EvidenceService:
         # a commit_sha must match it.  A mismatch means new commits landed after
         # evidence was recorded — the gate cannot trust those results.
         if branch_sha is not None:
+            # NULL commit_sha means the evidence was recorded without a known
+            # SHA — treat it as unbound/stale when the branch tip is known.
             stale = [
                 e for e in evidence
-                if e.get("commit_sha") is not None and e["commit_sha"] != branch_sha
+                if e.get("commit_sha") != branch_sha
             ]
             if stale:
                 stale_shas = ", ".join(

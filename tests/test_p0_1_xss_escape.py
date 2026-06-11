@@ -18,11 +18,12 @@ from httpx import ASGITransport, AsyncClient
 from fleet.api.auth import require_token
 from fleet.dashboard.router import (
     router as dashboard_router,
+)
+from fleet.dashboard.router import (
     set_approval_service,
     set_db,
     set_templates,
 )
-
 
 _TEMPLATES_DIR = pathlib.Path(__file__).parent.parent / "fleet" / "templates"
 _XSS_PAYLOAD = "<script>alert(1)</script>"
