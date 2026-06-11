@@ -12,6 +12,7 @@ items and P3 cleanup from `docs/reviews/pr1-review-fixes.md`.
 - A2 (P2-2) Evidence trust model — commit `e3fef88` — 288 tests green
 - B2 (P2-8+9) Schema + timestamp unification — commit `008c626` — 294 tests green
 - B3 (P2-5) Async hygiene sweep — commit `b654b2d` — 304 tests green
+- B4 (P2-6) SSE robustness — commit `e49592f` — 307 tests green
 
 **Branch strategy:** merge `fleet/phase-1-scaffold` first. Then one branch per phase
 below (`fleet/p2-security`, `fleet/p2-infra`, `fleet/p3-cleanup`). Do not mix phases
@@ -188,7 +189,7 @@ mirroring the write path; migrate callers mechanically.
 monkeypatched git runner), assert concurrent `/api/events` heartbeat still arrives
 < 100ms. Plus type-level guard: no bare `git_run(` calls in async defs (grep test).
 
-### B4 (P2-6). SSE robustness
+### B4 (P2-6). SSE robustness — DONE `e49592f`
 
 - Catch-up pagination: `fleet/api/events.py:132` caps at `limit=200` and silently
   gaps. Page until exhausted before switching to live.
