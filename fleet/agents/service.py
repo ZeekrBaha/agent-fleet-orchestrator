@@ -236,6 +236,23 @@ class AgentService:
             ).fetchall()
         return [_row_to_record(r) for r in rows]
 
+    async def set_worktree_id(self, agent_id: str, worktree_id: str) -> None:
+        """Set the worktree_id column for an existing agent row."""
+        now = datetime.now(UTC).isoformat()
+
+        def _write(conn: Connection) -> None:
+            conn.execute(
+                text(
+                    "UPDATE agents"
+                    " SET worktree_id = :worktree_id, updated_at = :now"
+                    " WHERE id = :id"
+                ),
+                {"worktree_id": worktree_id, "now": now, "id": agent_id},
+            )
+            conn.commit()
+
+        await self._db.write(_write)
+
     async def archive_agent(self, agent_id: str) -> None:
         """Set status=archived, emit state_change, stop session."""
         now = datetime.now(UTC).isoformat()

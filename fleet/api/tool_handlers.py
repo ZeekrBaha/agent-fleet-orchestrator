@@ -49,7 +49,7 @@ _SPAWN_ROLE_ALLOWLIST: dict[str, frozenset[str] | None] = {
 async def _handle_spawn_worker(
     inp: SpawnWorkerInput, svcs: dict[str, Any]
 ) -> dict[str, object]:
-    from fleet.agents.backends.mock import MockBackend
+    from fleet.api.agents import _make_backend
 
     agent_svc = svcs["agent_svc"]
     event_svc = svcs["event_svc"]
@@ -107,13 +107,14 @@ async def _handle_spawn_worker(
         scope=inp.scope,
         name=inp.name,
         role=inp.role,
-        backend=MockBackend(transcript=[]),
+        backend=_make_backend(inp.backend_type),
         model=inp.model,
         parent_id=inp.agent_id,
         repository_id=inp.repository_id,
         budget_soft_usd=inp.budget_soft_usd,
         budget_hard_usd=inp.budget_hard_usd,
-        backend_name="mock",
+        backend_name=inp.backend_type,
+        task_description=inp.task_description,
     )
     agent_id = record.id
 
@@ -121,13 +122,14 @@ async def _handle_spawn_worker(
     worktree_svc = svcs.get("worktree_svc")
     if worktree_svc is not None and inp.task_id and inp.repository_id:
         try:
-            await worktree_svc.create_worktree(
+            worktree = await worktree_svc.create_worktree(
                 repo_id=inp.repository_id,
                 agent_id=agent_id,
                 task_id=inp.task_id,
                 name=inp.name,
                 owned_paths=inp.owned_paths,
             )
+            await agent_svc.set_worktree_id(agent_id, worktree.id)
         except (WorktreeError, DirtyRepoError, OverlapError, ValueError) as exc:
             # Non-fatal: worktree creation failure does not block agent spawn.
             # Emit an error event so the failure is audited.
@@ -139,13 +141,13 @@ async def _handle_spawn_worker(
                 payload={"error": str(exc), "action": "worktree_create_failed"},
             )
 
-    # Emit task_created state_change event.
+    # Emit task_created state_change event (action="spawn" feeds the rate limiter).
     await event_svc.append(
         inp.scope,
         "state_change",
         "task_created",
         agent_id=agent_id,
-        payload={"task_id": inp.task_id, "name": inp.name},
+        payload={"task_id": inp.task_id, "name": inp.name, "action": "spawn"},
     )
 
     return {"agent_id": agent_id, "name": record.name, "status": record.status}

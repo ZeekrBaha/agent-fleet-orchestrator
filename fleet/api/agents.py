@@ -11,7 +11,7 @@ Endpoints:
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -48,16 +48,19 @@ def set_agent_service(svc: AgentService) -> None:
 # Backend factory
 # ---------------------------------------------------------------------------
 
-def _make_backend(backend_type: str) -> AgentBackend:
+def _make_backend(backend_type: Literal["mock", "claude"]) -> AgentBackend:
     """Create a backend instance by type name.
 
     Supported types:
-        - "mock" — deterministic MockBackend with no transcript (idle loop)
-
-    Task 2.3 will add the "claude" / "anthropic" adapter.
+        - "mock"   — deterministic MockBackend with no transcript (idle loop)
+        - "claude" — ClaudeBackend backed by Anthropic API (reads ANTHROPIC_API_KEY)
     """
     if backend_type == "mock":
         return MockBackend(transcript=[])
+    if backend_type == "claude":
+        from fleet.agents.backends.claude import ClaudeBackend
+
+        return ClaudeBackend()  # reads ANTHROPIC_API_KEY from env
     raise ValueError(f"Unknown backend type: {backend_type!r}")
 
 
@@ -73,7 +76,7 @@ class AgentCreate(BaseModel):
     name: str
     role: str
     model: str
-    backend_type: str = "mock"
+    backend_type: Literal["mock", "claude"] = "mock"
     parent_id: str | None = None
     repository_id: str | None = None
     budget_soft_usd: float | None = None

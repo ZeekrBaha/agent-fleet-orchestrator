@@ -19,6 +19,7 @@ class SpawnWorkerInput(BaseModel):
     task_description: str
     task_id: str | None = None
     model: str = Field(default="claude-sonnet-4-6")
+    backend_type: Literal["mock", "claude"] = "mock"
     repository_id: str | None = None
     owned_paths: list[str] = Field(default_factory=list)
     budget_soft_usd: float | None = None
