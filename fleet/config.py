@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,6 +41,8 @@ class Settings(BaseSettings):
         Rules:
         - A non-local bind with no API token means the server is reachable from
           the network with no authentication, which is forbidden.
+        - WEB_CONCURRENCY > 1 means multiple processes would share in-memory
+          state (e.g. MergeLock) — Fleet requires a single process.
 
         Note: When ``FLEET_API_TOKEN`` is empty and binding to loopback,
         authentication is bypassed for loopback clients (local dev mode).
@@ -49,4 +52,13 @@ class Settings(BaseSettings):
                 "FLEET_API_TOKEN must be set when binding to a non-loopback address "
                 f"(current host: {self.host!r}). "
                 "Set the token or restrict the bind address to 127.0.0.1 / ::1."
+            )
+
+        web_concurrency = int(os.environ.get("WEB_CONCURRENCY", "1"))
+        if web_concurrency > 1:
+            raise ConfigurationError(
+                f"Fleet requires a single process (WEB_CONCURRENCY=1), "
+                f"got WEB_CONCURRENCY={web_concurrency}. "
+                "The in-memory merge lock is not safe for multi-process deployments. "
+                "Run with a single worker or migrate MergeLock to SQLite."
             )
