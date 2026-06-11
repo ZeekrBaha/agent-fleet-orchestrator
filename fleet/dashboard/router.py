@@ -26,7 +26,11 @@ from fleet.api.auth import require_token
 from fleet.approvals.service import ApprovalService
 from fleet.db import DatabaseManager
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"], dependencies=[Depends(require_token)])
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["dashboard"],
+    dependencies=[Depends(require_token)],
+)
 
 # Module-level singletons set during app startup
 _db: DatabaseManager | None = None

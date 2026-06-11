@@ -87,7 +87,8 @@ async def _handle_spawn_worker(
     )
 
     # Identity binding gap: agent_id is caller-supplied; per-agent token binding is P2-1
-    # Role escalation check: validate requested role against caller's allowed spawn roles.
+    # Role escalation check: validate requested role against caller's
+    # allowed spawn roles.
     # calling_agent is guaranteed non-None here: check_spawn_rate() above already
     # dereferenced calling_agent.role, so it would have raised AttributeError first.
     assert calling_agent is not None  # noqa: S101 — invariant, not user-facing
@@ -96,7 +97,10 @@ async def _handle_spawn_worker(
     if allowed_spawn_roles is not None and inp.role not in allowed_spawn_roles:
         raise HTTPException(
             status_code=403,
-            detail=f"Role escalation denied: caller role '{caller_role}' cannot spawn role '{inp.role}'",
+            detail=(
+                f"Role escalation denied: caller role '{caller_role}' cannot "
+                f"spawn role '{inp.role}'"
+            ),
         )
 
     record = await agent_svc.create_agent(

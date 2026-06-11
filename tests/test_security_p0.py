@@ -128,7 +128,6 @@ async def dashboard_app_no_auth_override(
     tmp_path: Any,
 ) -> FastAPI:
     """Build dashboard app WITHOUT overriding require_token."""
-    import pathlib
 
     from fastapi.templating import Jinja2Templates
 
@@ -432,5 +431,5 @@ async def test_orchestrator_can_spawn_orchestrator(
 
     assert response.status_code == 200, (
         f"Expected 200 but got {response.status_code}. "
-        "Orchestrators must be allowed to spawn other orchestrators (unrestricted allowlist)."
+        "Orchestrators must be allowed to spawn orchestrators."
     )
