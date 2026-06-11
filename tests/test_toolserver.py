@@ -20,7 +20,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 
-from fleet.api.auth import require_token
+from fleet.api.auth import AgentIdentity, require_agent_identity
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService
 from fleet.events.sse import SSEHub
@@ -64,9 +64,9 @@ def _make_test_role_agent_svc() -> Any:
 # ---------------------------------------------------------------------------
 
 
-def _no_auth() -> None:
-    """Dependency override that bypasses token auth."""
-    return None
+def _no_auth() -> AgentIdentity:
+    """Dependency override that bypasses token auth (admin impersonation)."""
+    return AgentIdentity(agent_id=None, role=None, is_admin=True)
 
 
 @pytest_asyncio.fixture()
@@ -109,7 +109,7 @@ def _build_tools_app(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
     return app
 
 
@@ -227,7 +227,7 @@ async def test_spawn_worker_calls_agent_service(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -470,7 +470,7 @@ async def test_tool_error_emits_tool_result_error_event(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -584,7 +584,7 @@ async def test_check_conflict_returns_has_conflict(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

@@ -21,7 +21,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from fleet.api.auth import require_token
+from fleet.api.auth import AgentIdentity, require_agent_identity
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService
 from fleet.events.sse import SSEHub
@@ -31,9 +31,9 @@ from fleet.events.sse import SSEHub
 # ---------------------------------------------------------------------------
 
 
-def _no_auth() -> None:
-    """Bypass token auth in tests."""
-    return None
+def _no_auth() -> AgentIdentity:
+    """Bypass token auth in tests (admin impersonation)."""
+    return AgentIdentity(agent_id=None, role=None, is_admin=True)
 
 
 def _make_permissive_policy(extra_tools: list[str] | None = None) -> Any:
@@ -121,7 +121,7 @@ def _build_tools_app(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
     return app
 
 

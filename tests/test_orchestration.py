@@ -240,7 +240,7 @@ async def test_golden_event_sequence(
 
     from fleet.agents.inbox import InboxService
     from fleet.agents.service import AgentService
-    from fleet.api.auth import require_token
+    from fleet.api.auth import AgentIdentity, require_agent_identity
     from fleet.api.tools import router as tools_router
     from fleet.api.tools import set_policy_service, set_tool_services
     from fleet.policy.rules import load_manifest
@@ -304,7 +304,9 @@ async def test_golden_event_sequence(
 
         tools_app = FastAPI()
         tools_app.include_router(tools_router)
-        tools_app.dependency_overrides[require_token] = lambda: None
+        tools_app.dependency_overrides[require_agent_identity] = (
+            lambda: AgentIdentity(agent_id=None, role=None, is_admin=True)
+        )
 
         async with AsyncClient(
             transport=ASGITransport(tools_app), base_url="http://test"

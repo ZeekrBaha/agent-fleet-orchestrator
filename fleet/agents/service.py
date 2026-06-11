@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import logging
+import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -87,6 +89,8 @@ class AgentService:
         """
         agent_id = str(uuid.uuid4())
         now = datetime.now(UTC).isoformat()
+        agent_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
 
         # -- Build system prompt (ADR-005: fail on missing role prompt) ----------
         # assemble_prompt validates that the role prompt file exists.
@@ -151,11 +155,11 @@ class AgentService:
                     "INSERT INTO agents"
                     " (id, name, scope, role, backend, model, status,"
                     "  parent_id, repository_id, budget_soft_usd, budget_hard_usd,"
-                    "  created_at, updated_at)"
+                    "  token_hash, created_at, updated_at)"
                     " VALUES"
                     " (:id, :name, :scope, :role, :backend, :model, 'idle',"
                     "  :parent_id, :repository_id, :budget_soft_usd, :budget_hard_usd,"
-                    "  :created_at, :updated_at)"
+                    "  :token_hash, :created_at, :updated_at)"
                 ),
                 {
                     "id": agent_id,
@@ -168,6 +172,7 @@ class AgentService:
                     "repository_id": repository_id,
                     "budget_soft_usd": budget_soft_usd,
                     "budget_hard_usd": budget_hard_usd,
+                    "token_hash": token_hash,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -193,7 +198,9 @@ class AgentService:
         record = await self.get_agent(agent_id)
         if record is None:
             raise RuntimeError(f"agent row missing after insert: {agent_id}")
-        return record
+        # Deliver plaintext token exactly once to the caller for forwarding
+        # to the spawned agent's environment as FLEET_AGENT_TOKEN.
+        return record.model_copy(update={"plaintext_token": agent_token})
 
     async def send_message(self, agent_id: str, sender: str, message: str) -> int:
         """Enqueue an inbox message. Returns inbox id."""

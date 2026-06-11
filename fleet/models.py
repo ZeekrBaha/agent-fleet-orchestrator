@@ -66,8 +66,11 @@ class AgentRecord(BaseModel):
     cost_usd: float = 0.0
     budget_soft_usd: float | None = None
     budget_hard_usd: float | None = None
+    token_hash: str | None = None
     created_at: str
     updated_at: str
+    # Transient: set only during creation for one-time delivery; never persisted.
+    plaintext_token: str | None = None
 
 
 class WorktreeRecord(BaseModel):

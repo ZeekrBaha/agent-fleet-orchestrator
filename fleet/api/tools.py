@@ -27,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ValidationError
 
-from fleet.api.auth import require_token
+from fleet.api.auth import AgentIdentity, require_agent_identity
 from fleet.api.tool_handlers import (
     _handle_check_conflict,
     _handle_execute_merge,
@@ -229,13 +229,17 @@ _TOOL_REGISTRY: dict[str, tuple[type[BaseModel], Any]] = {
 async def dispatch_tool(
     tool_name: str,
     body: dict[str, object],
-    _auth: Annotated[None, Depends(require_token)],
+    agent_identity: Annotated[AgentIdentity, Depends(require_agent_identity)],
 ) -> dict[str, object]:
     """Dispatch a tool call by name.
 
     Validates input against the tool's Pydantic schema → 422 on bad input.
     Returns 404 for unknown tool names.
     Emits tool_call + tool_result audit events around each execution.
+
+    Auth: accepts per-agent tokens (FLEET_AGENT_TOKEN) or FLEET_API_TOKEN
+    (admin/impersonation).  Per-agent path: if body ``agent_id`` is present
+    and disagrees with the authenticated identity → 403.
     """
     entry = _TOOL_REGISTRY.get(tool_name)
     if entry is None:
@@ -249,11 +253,67 @@ async def dispatch_tool(
     except ValidationError as exc:
         # Re-raise as FastAPI RequestValidationError so the framework returns 422
         raise RequestValidationError(errors=exc.errors()) from exc
-    agent_id: str = str(getattr(validated, "agent_id", ""))
+
+    body_agent_id: str = str(getattr(validated, "agent_id", ""))
     scope: str = str(getattr(validated, "scope", ""))
 
     svcs = get_tool_services()
     event_svc = svcs["event_svc"]
+    agent_svc = svcs.get("agent_svc")
+
+    # --- Resolve canonical agent_id and role ---------------------------------
+    if agent_identity.is_admin:
+        # Admin/impersonation: use body agent_id.
+        # Resolve role: try agent_svc first (works in tests with mocked services),
+        # then fall back to direct DB lookup (works when agent_svc returns None).
+        agent_id = body_agent_id
+        calling_agent: Any = None
+        calling_role: str = "unknown"
+        if agent_svc is not None and agent_id:
+            calling_agent = await agent_svc.get_agent(agent_id)
+            if calling_agent is not None:
+                calling_role = calling_agent.role
+        if calling_role == "unknown":
+            db_svc = svcs.get("db")
+            if db_svc is not None and agent_id:
+                with db_svc.read_connection() as _conn:
+                    from sqlalchemy import text as _text  # noqa: PLC0415
+                    _row = _conn.execute(
+                        _text("SELECT role FROM agents WHERE id = :id"),
+                        {"id": agent_id},
+                    ).fetchone()
+                    if _row is not None:
+                        calling_role = str(_row[0])
+        # Emit admin impersonation event so the audit trail is explicit.
+        await event_svc.append(
+            scope,
+            "admin_impersonation",
+            f"Admin impersonating agent {agent_id!r} for tool {tool_name!r}",
+            agent_id=agent_id,
+            payload={"tool_name": tool_name, "impersonated_id": agent_id},
+        )
+    else:
+        # Per-agent token: authenticated identity IS the caller.
+        # Reject if body agent_id is present and disagrees.
+        if body_agent_id and body_agent_id != agent_identity.agent_id:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "type": "identity_mismatch",
+                    "title": "Identity mismatch",
+                    "detail": (
+                        f"Token authenticates {agent_identity.agent_id!r} "
+                        f"but body claims {body_agent_id!r}"
+                    ),
+                    "status": 403,
+                },
+            )
+        agent_id = agent_identity.agent_id or body_agent_id
+        calling_role = agent_identity.role or "unknown"
+        calling_agent = None
+        if agent_svc is not None and agent_id:
+            calling_agent = await agent_svc.get_agent(agent_id)
+    # -------------------------------------------------------------------------
 
     # Emit tool_call audit event (scrubbed)
     await _emit_tool_call(
@@ -261,22 +321,12 @@ async def dispatch_tool(
     )
 
     # --- Policy check (ADR-005: fail-closed) ---------------------------------
-    # No policy service → 503; every tool call must pass policy enforcement.
     policy_svc = get_policy_service()
     if policy_svc is None:
         raise HTTPException(
             status_code=503,
             detail="Policy service not configured",
         )
-
-    # Look up the calling agent's role from the DB/service.
-    agent_svc = svcs.get("agent_svc")
-    calling_role: str = "unknown"
-    calling_agent: Any = None
-    if agent_svc is not None and agent_id:
-        calling_agent = await agent_svc.get_agent(agent_id)
-        if calling_agent is not None:
-            calling_role = calling_agent.role
 
     try:
         policy_svc.check_tool_allowed(role=calling_role, tool_name=tool_name)

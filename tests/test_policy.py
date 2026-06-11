@@ -240,7 +240,7 @@ async def test_api_tool_denied_returns_403() -> None:
 
     from fleet.agents.inbox import InboxService
     from fleet.agents.service import AgentService
-    from fleet.api.auth import require_token
+    from fleet.api.auth import AgentIdentity, require_agent_identity
     from fleet.api.tools import router, set_policy_service, set_tool_services
     from fleet.db import init_db
     from fleet.events.service import EventService
@@ -289,12 +289,12 @@ async def test_api_tool_denied_returns_403() -> None:
         )
         set_policy_service(policy_svc)
 
-        def _no_auth() -> None:
-            return None
+        def _no_auth() -> AgentIdentity:
+            return AgentIdentity(agent_id=None, role=None, is_admin=True)
 
         app = FastAPI()
         app.include_router(router)
-        app.dependency_overrides[require_token] = _no_auth
+        app.dependency_overrides[require_agent_identity] = _no_auth
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
@@ -336,7 +336,7 @@ async def test_api_tool_allowed_passes() -> None:
 
     from fleet.agents.inbox import InboxService
     from fleet.agents.service import AgentService
-    from fleet.api.auth import require_token
+    from fleet.api.auth import AgentIdentity, require_agent_identity
     from fleet.api.tools import router, set_policy_service, set_tool_services
     from fleet.db import init_db
     from fleet.events.service import EventService
@@ -382,12 +382,12 @@ async def test_api_tool_allowed_passes() -> None:
         )
         set_policy_service(policy_svc)
 
-        def _no_auth() -> None:
-            return None
+        def _no_auth() -> AgentIdentity:
+            return AgentIdentity(agent_id=None, role=None, is_admin=True)
 
         app = FastAPI()
         app.include_router(router)
-        app.dependency_overrides[require_token] = _no_auth
+        app.dependency_overrides[require_agent_identity] = _no_auth
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

@@ -19,6 +19,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from fleet.api.auth import AgentIdentity
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService
 from fleet.events.sse import SSEHub
@@ -36,9 +37,9 @@ _SECURITY_P0_MANIFEST_PATH = os.path.join(
 )
 
 
-def _no_auth() -> None:
-    """Dependency override that bypasses token auth."""
-    return None
+def _no_auth() -> AgentIdentity:
+    """Dependency override that bypasses token auth (admin impersonation)."""
+    return AgentIdentity(agent_id=None, role=None, is_admin=True)
 
 
 def _make_worker_calling_agent_svc() -> Any:
@@ -229,7 +230,7 @@ def _build_tools_app_with_worker_caller(
     the policy layer passes and the new role-ACL check in _handle_spawn_worker
     is what determines the outcome.
     """
-    from fleet.api.auth import require_token
+    from fleet.api.auth import require_agent_identity
     from fleet.api.tools import router, set_policy_service, set_tool_services
     from fleet.policy.rules import load_manifest
     from fleet.policy.service import PolicyService
@@ -246,7 +247,7 @@ def _build_tools_app_with_worker_caller(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
     return app
 
 
@@ -340,7 +341,7 @@ async def test_worker_can_spawn_worker(
     mock_agent_svc.get_agent.return_value = calling_agent
     mock_agent_svc.list_agents.return_value = []
 
-    from fleet.api.auth import require_token
+    from fleet.api.auth import require_agent_identity
     from fleet.api.tools import router, set_policy_service, set_tool_services
     from fleet.policy.rules import load_manifest
     from fleet.policy.service import PolicyService
@@ -357,7 +358,7 @@ async def test_worker_can_spawn_worker(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -406,7 +407,7 @@ async def test_orchestrator_can_spawn_orchestrator(
     mock_agent_svc.get_agent.return_value = calling_agent
     mock_agent_svc.list_agents.return_value = []
 
-    from fleet.api.auth import require_token
+    from fleet.api.auth import require_agent_identity
     from fleet.api.tools import router, set_policy_service, set_tool_services
     from fleet.policy.rules import load_manifest
     from fleet.policy.service import PolicyService
@@ -423,7 +424,7 @@ async def test_orchestrator_can_spawn_orchestrator(
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[require_token] = _no_auth
+    app.dependency_overrides[require_agent_identity] = _no_auth
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"

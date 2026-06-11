@@ -54,6 +54,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.validate_for_startup()
 
     manager: DatabaseManager = await init_db(settings.db_path)
+
+    from fleet.api.auth import set_auth_db  # noqa: PLC0415
+    set_auth_db(manager)
+
     sse_hub = SSEHub()
     event_svc = create_event_service(manager, sse_hub)
 
