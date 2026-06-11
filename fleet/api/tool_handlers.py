@@ -13,6 +13,7 @@ Handlers must return a plain ``dict[str, object]``.  They may raise
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -38,6 +39,12 @@ from fleet.api.tool_schemas import (
 from fleet.policy.service import PolicyDenied
 from fleet.workspace.worktree_service import DirtyRepoError, OverlapError, WorktreeError
 
+# Per-scope asyncio.Lock to serialize spawn-cap checks (P1-20 TOCTOU fix).
+# Without this lock, concurrent _handle_spawn_worker calls for the same scope
+# could both read the same live_count, both pass the cap check, and both spawn —
+# exceeding max_live_workers.
+_spawn_locks: dict[str, asyncio.Lock] = {}
+
 # Role escalation policy: maps caller role → frozenset of roles it may spawn.
 # None means unrestricted (orchestrator may spawn any role).
 _SPAWN_ROLE_ALLOWLIST: dict[str, frozenset[str] | None] = {
@@ -61,69 +68,76 @@ async def _handle_spawn_worker(
         )
     calling_agent = svcs["_calling_agent"]
 
-    # Count live workers in this scope (for spawn rate check)
-    live_workers = await agent_svc.list_agents(scope=inp.scope)
-    live_count = sum(
-        1 for a in live_workers if a.status not in ("archived", "failed")
-    )
-
-    # Count spawns in last 60 seconds from state_change events with action=spawn
-    recent_events = await event_svc.query(
-        inp.scope, type_filter="state_change", limit=500
-    )
-    cutoff = (
-        datetime.now(UTC) - timedelta(minutes=1)
-    ).isoformat().replace("+00:00", "Z")
-    spawns_last_minute = sum(
-        1
-        for e in recent_events
-        if e.ts >= cutoff and e.payload.get("action") == "spawn"
-    )
-
-    policy_svc.check_spawn_rate(
-        scope=inp.scope,
-        role=calling_agent.role,
-        current_live_workers=live_count,
-        spawns_last_minute=spawns_last_minute,
-    )
-
-    # Identity binding gap: agent_id is caller-supplied; per-agent token binding is P2-1
-    # Role escalation check: validate requested role against caller's
-    # allowed spawn roles.
-    # calling_agent is guaranteed non-None here: check_spawn_rate() above already
-    # dereferenced calling_agent.role, so it would have raised AttributeError first.
-    assert calling_agent is not None  # noqa: S101 — invariant, not user-facing
-    caller_role = calling_agent.role
-    allowed_spawn_roles = _SPAWN_ROLE_ALLOWLIST.get(caller_role, frozenset({"worker"}))
-    if allowed_spawn_roles is not None and inp.role not in allowed_spawn_roles:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Role escalation denied: caller role '{caller_role}' cannot "
-                f"spawn role '{inp.role}'"
-            ),
+    # Acquire a per-scope lock to serialize the live-count check + spawn
+    # (P1-20 TOCTOU fix). Without this lock, concurrent spawns for the same
+    # scope all read the same live_count before any of them increments it.
+    spawn_lock = _spawn_locks.setdefault(inp.scope, asyncio.Lock())
+    async with spawn_lock:
+        # Count live workers in this scope (for spawn rate check)
+        live_workers = await agent_svc.list_agents(scope=inp.scope)
+        live_count = sum(
+            1 for a in live_workers if a.status not in ("archived", "failed")
         )
 
-    # Secret path guard: block any owned_path that matches a secret glob pattern.
-    for path in inp.owned_paths:
-        try:
-            policy_svc.check_secret_path(path)
-        except PolicyDenied as exc:
-            raise HTTPException(status_code=403, detail=exc.reason) from exc
+        # Count spawns in last 60 seconds from state_change events with action=spawn
+        recent_events = await event_svc.query(
+            inp.scope, type_filter="state_change", limit=500
+        )
+        cutoff = (
+            datetime.now(UTC) - timedelta(minutes=1)
+        ).isoformat().replace("+00:00", "Z")
+        spawns_last_minute = sum(
+            1
+            for e in recent_events
+            if e.ts >= cutoff and e.payload.get("action") == "spawn"
+        )
 
-    record = await agent_svc.create_agent(
-        scope=inp.scope,
-        name=inp.name,
-        role=inp.role,
-        backend=_make_backend(inp.backend_type),
-        model=inp.model,
-        parent_id=inp.agent_id,
-        repository_id=inp.repository_id,
-        budget_soft_usd=inp.budget_soft_usd,
-        budget_hard_usd=inp.budget_hard_usd,
-        backend_name=inp.backend_type,
-        task_description=inp.task_description,
-    )
+        policy_svc.check_spawn_rate(
+            scope=inp.scope,
+            role=calling_agent.role,
+            current_live_workers=live_count,
+            spawns_last_minute=spawns_last_minute,
+        )
+
+        # Identity binding gap: agent_id is caller-supplied; token binding is P2-1.
+        # Role escalation check: validate requested role against caller's
+        # allowed spawn roles.
+        # calling_agent is guaranteed non-None here: check_spawn_rate() above already
+        # dereferenced calling_agent.role, so it would have raised AttributeError first.
+        assert calling_agent is not None  # noqa: S101 — invariant, not user-facing
+        caller_role = calling_agent.role
+        allowed_spawn_roles = _SPAWN_ROLE_ALLOWLIST.get(
+            caller_role, frozenset({"worker"})
+        )
+        if allowed_spawn_roles is not None and inp.role not in allowed_spawn_roles:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Role escalation denied: caller role '{caller_role}' cannot "
+                    f"spawn role '{inp.role}'"
+                ),
+            )
+
+        # Secret path guard: block any owned_path that matches a secret glob pattern.
+        for path in inp.owned_paths:
+            try:
+                policy_svc.check_secret_path(path)
+            except PolicyDenied as exc:
+                raise HTTPException(status_code=403, detail=exc.reason) from exc
+
+        record = await agent_svc.create_agent(
+            scope=inp.scope,
+            name=inp.name,
+            role=inp.role,
+            backend=_make_backend(inp.backend_type),
+            model=inp.model,
+            parent_id=inp.agent_id,
+            repository_id=inp.repository_id,
+            budget_soft_usd=inp.budget_soft_usd,
+            budget_hard_usd=inp.budget_hard_usd,
+            backend_name=inp.backend_type,
+            task_description=inp.task_description,
+        )
     agent_id = record.id
 
     # Create a worktree for this task when worktree_svc and task_id are available.

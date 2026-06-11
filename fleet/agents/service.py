@@ -14,6 +14,7 @@ Public API:
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -257,7 +258,16 @@ class AgentService:
         await self._db.write(_write)
 
     async def archive_agent(self, agent_id: str) -> None:
-        """Set status=archived, emit state_change, stop session."""
+        """Set status=archived, emit state_change, stop session.
+
+        Order matters (P1-21): cancel the session task FIRST to prevent queued
+        _set_status calls from resurrecting the agent after we mark it archived.
+        """
+        # Cancel the session task BEFORE writing to DB (P1-21 fix).
+        # If we archived first, a still-running session could write a new status
+        # (e.g. "idle") on its next _set_status call, overwriting "archived".
+        await self._stop_session(agent_id)
+
         now = datetime.now(UTC).isoformat()
 
         def _write(conn: Connection) -> None:
@@ -281,7 +291,6 @@ class AgentService:
             agent_id=agent_id,
             payload={"status": "archived"},
         )
-        await self._stop_session(agent_id)
 
     async def restore_sessions(
         self,
@@ -387,6 +396,10 @@ class AgentService:
             approval_svc=self._approval_svc,
         )
         task = asyncio.create_task(session.run(), name=f"session:{agent_id}")
+        # P1-23: add done-callback so silent task death is logged as an error.
+        task.add_done_callback(
+            functools.partial(_session_done_callback, agent_id=agent_id)
+        )
         session._task = task
         self._sessions[agent_id] = session
 
@@ -409,6 +422,25 @@ class AgentService:
 # ---------------------------------------------------------------------------
 # Module-level helpers (sync, no DB write queue needed)
 # ---------------------------------------------------------------------------
+
+
+def _session_done_callback(task: asyncio.Task[None], *, agent_id: str) -> None:
+    """Done-callback for session tasks (P1-23).
+
+    If the task completed with an unhandled exception (e.g. backend.start()
+    raised), log an error so the failure is visible rather than silently lost.
+    Cancellation is normal shutdown and is not logged as an error.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _logger.error(
+            "session task for agent %s died: %s",
+            agent_id,
+            exc,
+            exc_info=exc,
+        )
 
 
 def _row_to_record(row) -> AgentRecord:  # type: ignore[no-untyped-def]

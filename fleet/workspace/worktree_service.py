@@ -17,6 +17,7 @@ Public API:
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import json
 import re
@@ -147,6 +148,8 @@ class WorktreeService:
         self._db = db
         self._event_service = event_service
         self._workspace = workspace_service
+        # Per-repo asyncio.Lock to serialize create_worktree calls (P1-19 TOCTOU fix).
+        self._repo_locks: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -192,80 +195,86 @@ class WorktreeService:
                 options=["continue_dirty", "stash", "commit", "cancel"]
             )
 
-        # Overlap check against active worktrees.
-        active = await self.list_worktrees(repo_id, status="active")
-        for existing in active:
-            existing_paths = json.loads(existing.owned_paths_json)
-            for new_path in owned_paths:
-                for existing_path in existing_paths:
-                    if _paths_overlap(new_path, existing_path):
-                        raise OverlapError(conflicting_worktree_id=existing.id)
+        # Serialize concurrent create_worktree calls per repo (P1-19 TOCTOU fix).
+        # Without this lock, two concurrent calls could both pass the overlap check
+        # (reading the same empty active list) then both insert, violating ownership
+        # isolation.
+        lock = self._repo_locks.setdefault(repo_id, asyncio.Lock())
+        async with lock:
+            # Overlap check against active worktrees.
+            active = await self.list_worktrees(repo_id, status="active")
+            for existing in active:
+                existing_paths = json.loads(existing.owned_paths_json)
+                for new_path in owned_paths:
+                    for existing_path in existing_paths:
+                        if _paths_overlap(new_path, existing_path):
+                            raise OverlapError(conflicting_worktree_id=existing.id)
 
-        # Build branch name: fleet/<slug> where slug = slugify(task_id, name)
-        slug = _slugify(task_id, name)
-        branch = f"fleet/{slug}"
+            # Build branch name: fleet/<slug> where slug = slugify(task_id, name)
+            slug = _slugify(task_id, name)
+            branch = f"fleet/{slug}"
 
-        # Worktree lives sibling to the main repo:
-        # <repo-parent>/fleet-worktrees/<branch>
-        repo_path = Path(repo.path)
-        worktree_path = repo_path.parent / "fleet-worktrees" / branch
-        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+            # Worktree lives sibling to the main repo:
+            # <repo-parent>/fleet-worktrees/<branch>
+            repo_path = Path(repo.path)
+            worktree_path = repo_path.parent / "fleet-worktrees" / branch
+            worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            worktree_add(repo.path, worktree_path, branch)
-        except GitError as exc:
-            raise WorktreeError(f"git worktree add failed: {exc}") from exc
+            try:
+                worktree_add(repo.path, worktree_path, branch)
+            except GitError as exc:
+                raise WorktreeError(f"git worktree add failed: {exc}") from exc
 
-        worktree_id = str(uuid.uuid4())
-        now = datetime.now(UTC).isoformat()
-        owned_json = json.dumps(owned_paths)
-        base_branch = repo.default_branch
+            worktree_id = str(uuid.uuid4())
+            now = datetime.now(UTC).isoformat()
+            owned_json = json.dumps(owned_paths)
+            base_branch = repo.default_branch
 
-        def _write(conn: Connection) -> None:
-            conn.execute(
-                text(
-                    "INSERT INTO worktrees"
-                    " (id, agent_id, repository_id, path, branch, base_branch,"
-                    "  owned_paths_json, status, created_at, task_id)"
-                    " VALUES"
-                    " (:id, :agent_id, :repository_id, :path, :branch,"
-                    "  :base_branch, :owned_paths_json, :status, :created_at,"
-                    "  :task_id)"
-                ),
-                {
-                    "id": worktree_id,
-                    "agent_id": agent_id,
-                    "repository_id": repo_id,
-                    "path": str(worktree_path),
+            def _write(conn: Connection) -> None:
+                conn.execute(
+                    text(
+                        "INSERT INTO worktrees"
+                        " (id, agent_id, repository_id, path, branch, base_branch,"
+                        "  owned_paths_json, status, created_at, task_id)"
+                        " VALUES"
+                        " (:id, :agent_id, :repository_id, :path, :branch,"
+                        "  :base_branch, :owned_paths_json, :status, :created_at,"
+                        "  :task_id)"
+                    ),
+                    {
+                        "id": worktree_id,
+                        "agent_id": agent_id,
+                        "repository_id": repo_id,
+                        "path": str(worktree_path),
+                        "branch": branch,
+                        "base_branch": base_branch,
+                        "owned_paths_json": owned_json,
+                        "status": "active",
+                        "created_at": now,
+                        "task_id": task_id,
+                    },
+                )
+                conn.commit()
+
+            await self._db.write(_write)
+
+            await self._event_service.append(
+                "workspace",
+                "git_action",
+                f"Worktree created: {branch}",
+                agent_id=agent_id,
+                payload={
+                    "action": "worktree_created",
+                    "worktree_id": worktree_id,
+                    "repo_id": repo_id,
                     "branch": branch,
-                    "base_branch": base_branch,
-                    "owned_paths_json": owned_json,
-                    "status": "active",
-                    "created_at": now,
-                    "task_id": task_id,
+                    "path": str(worktree_path),
                 },
             )
-            conn.commit()
 
-        await self._db.write(_write)
-
-        await self._event_service.append(
-            "workspace",
-            "git_action",
-            f"Worktree created: {branch}",
-            agent_id=agent_id,
-            payload={
-                "action": "worktree_created",
-                "worktree_id": worktree_id,
-                "repo_id": repo_id,
-                "branch": branch,
-                "path": str(worktree_path),
-            },
-        )
-
-        record = await self._get_worktree(worktree_id)
-        assert record is not None, "just-inserted worktree should be retrievable"
-        return record
+            record = await self._get_worktree(worktree_id)
+            assert record is not None, "just-inserted worktree should be retrievable"
+            return record
 
     async def remove_worktree(self, worktree_id: str) -> None:
         """Remove a worktree from disk and mark it removed in the DB.

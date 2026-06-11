@@ -168,8 +168,21 @@ class AgentSession:
 
     async def run(self) -> None:
         """Main loop: wait for inbox → run turns → repeat."""
-        # Start (or resume) the backend session
-        self._session_ref = await self._backend.start(self._session_ref)
+        # Start (or resume) the backend session.
+        # Wrap in try/except (P1-23): if start() raises, the exception propagates
+        # out of this coroutine and is caught by the done-callback in _start_session,
+        # which logs it as an error rather than letting it vanish silently.
+        try:
+            self._session_ref = await self._backend.start(self._session_ref)
+        except Exception as exc:  # noqa: BLE001
+            await self._event_service.append(
+                self._scope,
+                "error",
+                f"backend.start failed for agent {self._agent_id}: {exc}",
+                agent_id=self._agent_id,
+                payload={"exc": str(exc), "reason": "backend_start_failed"},
+            )
+            raise
 
         # Pick up any pre-existing pending messages (at-least-once delivery)
         while True:

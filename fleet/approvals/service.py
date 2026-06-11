@@ -145,18 +145,19 @@ class ApprovalService:
         existing = await self.get(approval_id)
         if existing is None:
             raise KeyError(f"approval {approval_id} not found")
-        if existing.status != "pending":
-            raise ValueError(
-                f"approval {approval_id} is not pending (status={existing.status})"
-            )
+
+        # Check-then-set race fix (P1-18): the UPDATE targets only pending rows.
+        # If another concurrent decide() already wrote a decision, rowcount == 0
+        # and we raise instead of silently overwriting the first decision.
+        rows_updated: list[int] = []
 
         def _write(conn: Connection) -> None:
-            conn.execute(
+            result = conn.execute(
                 text(
                     "UPDATE approvals"
                     " SET status = :status, comment = :comment,"
                     "     decided_at = :decided_at, decided_by = :decided_by"
-                    " WHERE id = :id"
+                    " WHERE id = :id AND status = 'pending'"
                 ),
                 {
                     "status": new_status,
@@ -167,9 +168,15 @@ class ApprovalService:
                 },
             )
             conn.commit()
+            rows_updated.append(result.rowcount)
 
         # NOTE: INSERT and event append are serialized through the single-writer queue.
         await self._db.write(_write)
+
+        if rows_updated[0] == 0:
+            raise ValueError(
+                f"approval {approval_id} already decided"
+            )
 
         record = await self.get(approval_id)
         if record is None:
