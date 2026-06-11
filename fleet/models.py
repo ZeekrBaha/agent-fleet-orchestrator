@@ -20,6 +20,23 @@ AgentStatus = Literal[
 WorktreeStatus = Literal["active", "merged", "removed"]
 InboxStatus = Literal["pending", "delivered", "failed"]
 ApprovalStatus = Literal["pending", "approved", "denied"]
+
+# Exhaustive set of event type strings written to the events table.
+# Use this type annotation on event_service.append() callers to catch typos
+# at static-analysis time rather than at runtime.
+EventType = Literal[
+    "state_change",
+    "error",
+    "tool_call",
+    "tool_result",
+    "tool_result_error",
+    "agent_message",
+    "admin_impersonation",
+    "budget_exceeded",
+    "budget_alert",
+    "merge_result",
+    "review_verdict",
+]
 MemoryKind = Literal[
     "architecture_decision",
     "known_bug",
@@ -27,6 +44,8 @@ MemoryKind = Literal[
     "command_recipe",
     "dependency_note",
     "deployment_note",
+    "compaction",
+    "note",
 ]
 
 # ---------------------------------------------------------------------------
@@ -43,7 +62,7 @@ class Event(BaseModel):
     agent_id: str | None = None
     type: str
     summary: str
-    payload: dict  # type: ignore[type-arg]
+    payload: dict[str, object]
 
 
 class AgentRecord(BaseModel):
@@ -64,8 +83,11 @@ class AgentRecord(BaseModel):
     cost_usd: float = 0.0
     budget_soft_usd: float | None = None
     budget_hard_usd: float | None = None
+    token_hash: str | None = None
     created_at: str
     updated_at: str
+    # Transient: set only during creation for one-time delivery; never persisted.
+    plaintext_token: str | None = None
 
 
 class WorktreeRecord(BaseModel):
@@ -108,3 +130,15 @@ class ApprovalRecord(BaseModel):
     comment: str | None = None
     created_at: str
     decided_at: str | None = None
+
+
+class MemoryRecord(BaseModel):
+    """Mirrors the `agent_memories` table row."""
+
+    id: int
+    agent_id: str
+    scope: str
+    kind: MemoryKind
+    content: str
+    metadata: dict[str, object]
+    ts: str

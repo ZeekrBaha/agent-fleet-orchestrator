@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+
+{% block title %}Validation — {{ task.title if task else 'Unknown' }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="/dashboard/" aria-label="Back to roster">
+    <i data-lucide="arrow-left" style="width:20px;height:20px;stroke-width:1.5;color:var(--text-secondary)" aria-hidden="true"></i>
+  </a>
+  <i data-lucide="check-square" style="width:20px;height:20px;stroke-width:1.5;color:var(--accent)" aria-hidden="true"></i>
+  <h1 class="page-title">Validation &amp; Merge</h1>
+  {% if task %}
+  <span class="text-muted" style="font-size:13px;">{{ task.title }}</span>
+  {% endif %}
+</div>
+
+<div class="page-body" id="validation-body" data-state="{{ 'error' if error else 'success' }}">
+  {% if error %}
+  <div id="error-state" class="error-banner" role="alert">
+    <i data-lucide="alert-triangle" style="width:16px;height:16px;stroke-width:1.5;flex-shrink:0" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+  </div>
+  {% else %}
+  <div id="error-state" class="error-banner" role="alert" style="display:none;" aria-hidden="true"></div>
+  {% endif %}
+
+  {% if task %}
+  <!-- Task info -->
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;">
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Task</div>
+        <div style="font-weight:500;">{{ task.title }}</div>
+      </div>
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Status</div>
+        <span style="font-size:13px;">{{ task.status | replace("_", " ") }}</span>
+      </div>
+      {% if task.branch %}
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Branch</div>
+        <span class="mono">{{ task.branch }}</span>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Evidence table -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="section-header" style="margin-bottom:12px;">Validation Evidence</div>
+
+    {% if evidence | length == 0 %}
+    <div class="empty-state" style="padding:24px;">
+      <i data-lucide="clipboard" style="width:24px;height:24px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+      <p class="text-muted">No validation evidence recorded yet.</p>
+    </div>
+    {% else %}
+    <table class="data-table" aria-label="Validation evidence">
+      <thead>
+        <tr>
+          <th>Check</th>
+          <th>Status</th>
+          <th>Output</th>
+          <th>Recorded by</th>
+          <th>Timestamp</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ev in evidence %}
+        <tr>
+          <td style="font-weight:500;">{{ ev.check_name }}</td>
+          <td>
+            {% if ev.status == 'pass' %}
+            <span class="status-badge check-pass" style="background:rgba(63,163,114,0.12);">
+              <i data-lucide="check-circle" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+              pass
+            </span>
+            {% elif ev.status == 'fail' %}
+            <span class="status-badge check-fail" style="background:rgba(217,100,89,0.12);">
+              <i data-lucide="x-circle" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+              fail
+            </span>
+            {% else %}
+            <span class="status-badge" style="color:var(--text-muted);background:rgba(92,107,114,0.12);">
+              <i data-lucide="minus-circle" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+              skip
+            </span>
+            {% endif %}
+          </td>
+          <td>
+            {% if ev.status == 'fail' %}
+            <span class="text-danger" style="font-size:13px;">{{ ev.output[:120] }}{% if ev.output | length > 120 %}…{% endif %}</span>
+            {% else %}
+            <span class="text-muted" style="font-size:13px;">{{ ev.output[:120] }}{% if ev.output | length > 120 %}…{% endif %}</span>
+            {% endif %}
+          </td>
+          <td><span class="mono text-muted" style="font-size:11px;">{{ ev.recorded_by or '—' }}</span></td>
+          <td><span class="mono text-muted" style="font-size:11px;">{{ ev.ts }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+  <!-- Merge policy checklist -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="section-header" style="margin-bottom:12px;">Merge Checklist</div>
+
+    <div class="checklist-item">
+      {% if not any_fail %}
+      <i data-lucide="check-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--diff-add-fg)" aria-hidden="true"></i>
+      <span>Evidence present</span>
+      <span class="text-muted" style="margin-left:auto;font-size:12px;">{{ evidence | length }} check(s)</span>
+      {% else %}
+      <i data-lucide="x-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--status-failed)" aria-hidden="true"></i>
+      <span class="text-danger">Evidence has failures</span>
+      {% endif %}
+    </div>
+
+    <div class="checklist-item">
+      {% if evidence | length > 0 %}
+      <i data-lucide="check-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--diff-add-fg)" aria-hidden="true"></i>
+      <span>Evidence recorded</span>
+      {% else %}
+      <i data-lucide="x-circle" style="width:16px;height:16px;stroke-width:1.5;color:var(--status-failed)" aria-hidden="true"></i>
+      <span class="text-danger">No evidence recorded</span>
+      {% endif %}
+    </div>
+
+    <div class="checklist-item">
+      <i data-lucide="clock" style="width:16px;height:16px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+      <span class="text-muted">Reviewer verdict</span>
+      <span class="text-muted" style="margin-left:auto;font-size:12px;">not required</span>
+    </div>
+  </div>
+
+  <!-- Conflict simulation result placeholder -->
+  <div id="conflict-result" style="margin-bottom:16px;" aria-live="polite"></div>
+
+  <!-- Approve & Merge button -->
+  {% if task.branch %}
+  <button class="btn btn-primary"
+          {% if not checklist_ok %}disabled aria-disabled="true"{% endif %}
+          hx-post="/api/merge/{{ task.id }}"
+          hx-vals='{"scope": "{{ task.scope }}", "agent_id": "{{ task.owner_agent_id or '' }}", "task_name": "{{ task.title }}"}'
+          hx-target="#merge-result"
+          hx-swap="innerHTML"
+          aria-label="Approve and merge — {% if not checklist_ok %}disabled: checklist not complete{% else %}merge this task{% endif %}">
+    <i data-lucide="git-merge" style="width:16px;height:16px;stroke-width:1.5" aria-hidden="true"></i>
+    Approve &amp; Merge
+  </button>
+  <div id="merge-result" style="margin-top:12px;" aria-live="polite"></div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,19 @@
+version: "1"
+
+# Manifest for A1 identity-binding tests.
+# orchestrator can call stop_agent; worker cannot — used to verify policy
+# uses the authenticated role, not the body-supplied agent_id.
+roles:
+  orchestrator:
+    allowed_tools:
+      - list_agents
+      - stop_agent
+    spawn_rate:
+      max_live_workers: 100
+      max_spawns_per_minute: 100
+  worker:
+    allowed_tools:
+      - list_agents
+    spawn_rate:
+      max_live_workers: 10
+      max_spawns_per_minute: 10

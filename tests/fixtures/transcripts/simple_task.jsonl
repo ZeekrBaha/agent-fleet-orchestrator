@@ -1,0 +1,5 @@
+{"type": "text_chunk", "text": "I'll spawn a worker to handle this task."}
+{"type": "tool_use", "tool_id": "tool-001", "tool_name": "spawn_worker", "input": {"name": "coder-1", "role": "coder", "task": "implement the feature"}}
+{"type": "tool_result", "tool_id": "tool-001", "output": "worker coder-1 spawned on branch fleet/task-1-coder-1", "is_error": false}
+{"type": "text_chunk", "text": "Worker coder-1 has been spawned and is working on the task."}
+{"type": "turn_end", "cost_usd": 0.002, "input_tokens": 150, "output_tokens": 80, "context_pct": 0.12}

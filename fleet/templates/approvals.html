@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block title %}Approval Queue{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i data-lucide="shield-check" style="width:20px;height:20px;stroke-width:1.5;color:var(--accent)" aria-hidden="true"></i>
+  <h1 class="page-title">Approval Queue</h1>
+
+  {% if scopes %}
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+    <form method="get" action="/dashboard/approvals" style="display:flex;gap:8px;align-items:center;">
+      <label for="scope-filter" class="text-muted" style="font-size:12px;">Scope</label>
+      <select id="scope-filter" name="scope" onchange="this.form.submit()" style="font-size:13px;">
+        <option value="" {% if not current_scope %}selected{% endif %}>All</option>
+        {% for s in scopes %}
+        <option value="{{ s }}" {% if current_scope == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<div class="page-body" id="approvals-body" data-state="{{ 'error' if error else 'success' }}">
+  {% if error %}
+  <div id="error-state" class="error-banner" role="alert">
+    <i data-lucide="alert-triangle" style="width:16px;height:16px;stroke-width:1.5;flex-shrink:0" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+    <button class="btn btn-ghost btn-sm" onclick="window.location.reload()" style="margin-left:auto;" aria-label="Retry">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+      Retry
+    </button>
+  </div>
+  {% else %}
+  <div id="error-state" class="error-banner" role="alert" style="display:none;" aria-hidden="true"></div>
+  {% endif %}
+
+  <!-- Success feedback (shown after approve/deny via JS) -->
+  <div id="success-state" class="state-success" role="status" aria-live="polite" style="display:none;padding:8px 12px;margin-bottom:12px;background:rgba(63,163,114,0.12);border:1px solid rgba(63,163,114,0.30);border-radius:var(--radius-control);color:var(--diff-add-fg);font-size:14px;"></div>
+
+  <!-- Pending approvals -->
+  <div style="margin-bottom:32px;">
+    <div class="section-header" style="margin-bottom:12px;">
+      Pending
+      {% if pending | length > 0 %}
+      <span style="font-family:var(--font-mono);font-size:12px;color:var(--status-waiting);margin-left:8px;">{{ pending | length }}</span>
+      {% endif %}
+    </div>
+
+    {% if pending | length == 0 %}
+    <div class="card">
+      <div class="empty-state" style="padding:32px;">
+        <i data-lucide="shield-check" style="width:32px;height:32px;stroke-width:1.5;color:var(--diff-add-fg)" aria-hidden="true"></i>
+        <p class="empty-state-title">No pending approvals — all clear.</p>
+      </div>
+    </div>
+    {% else %}
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table" aria-label="Pending approvals">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Operation</th>
+            <th>Rationale</th>
+            <th>Risk</th>
+            <th>Age</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="pending-approvals-tbody">
+          {% for ap in pending %}
+          <tr id="approval-row-{{ ap.id }}" data-approval-id="{{ ap.id }}">
+            <td><span class="mono text-muted" style="font-size:12px;">{{ ap.requester_agent_id }}</span></td>
+            <td>
+              <span class="mono" style="font-size:13px;font-weight:500;">{{ ap.operation }}</span>
+            </td>
+            <td style="max-width:300px;">
+              <span style="font-size:13px;">{{ ap.rationale[:100] }}{% if ap.rationale | length > 100 %}…{% endif %}</span>
+            </td>
+            <td>
+              <span class="status-badge {% if ap.risk == 'high' %}status-failed{% elif ap.risk == 'medium' %}status-waiting{% else %}status-idle{% endif %}">
+                {{ ap.risk }}
+              </span>
+            </td>
+            <td><span class="text-muted">{{ relative_time(ap.created_at) }}</span></td>
+            <td>
+              <form class="inline-form"
+                    hx-post="/dashboard/approvals/{{ ap.id }}/decide"
+                    hx-target="#approval-row-{{ ap.id }}"
+                    hx-swap="outerHTML"
+                    style="gap:8px;flex-wrap:wrap;">
+                <input type="text" name="comment" placeholder="Comment (optional)…"
+                       style="min-width:140px;flex:1;font-size:12px;"
+                       aria-label="Comment for approval {{ ap.id }}">
+                <button type="submit" name="decision" value="approve"
+                        class="btn btn-primary btn-approve"
+                        aria-label="Approve operation: {{ ap.operation }}">
+                  <i data-lucide="check" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+                  Approve
+                </button>
+                <button type="submit" name="decision" value="deny"
+                        class="btn btn-danger btn-deny"
+                        aria-label="Deny operation: {{ ap.operation }}">
+                  <i data-lucide="x" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+                  Deny
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Decision history -->
+  <div>
+    <div class="section-header" style="margin-bottom:12px;">Decision History</div>
+
+    {% if decided | length == 0 %}
+    <div class="card">
+      <div class="empty-state" style="padding:24px;">
+        <p class="text-muted">No decisions recorded yet.</p>
+      </div>
+    </div>
+    {% else %}
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table" aria-label="Approval decision history">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Operation</th>
+            <th>Decision</th>
+            <th>Comment</th>
+            <th>Decided by</th>
+            <th>Decided</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ap in decided %}
+          <tr>
+            <td><span class="mono text-muted" style="font-size:12px;">{{ ap.requester_agent_id }}</span></td>
+            <td><span class="mono" style="font-size:13px;">{{ ap.operation }}</span></td>
+            <td>
+              <span class="status-badge {% if ap.status == 'approved' %}status-running{% else %}status-failed{% endif %}">
+                <i data-lucide="{% if ap.status == 'approved' %}check{% else %}x{% endif %}"
+                   style="width:12px;height:12px;stroke-width:1.5" aria-hidden="true"></i>
+                {{ ap.status }}
+              </span>
+            </td>
+            <td><span class="text-muted" style="font-size:13px;">{{ ap.comment or '—' }}</span></td>
+            <td><span class="mono text-muted" style="font-size:12px;">{{ ap.decided_by or '—' }}</span></td>
+            <td><span class="text-muted">{{ relative_time(ap.decided_at) }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  // Show success banner after approve/deny htmx swap
+  document.body.addEventListener('htmx:afterSwap', function(evt) {
+    var successEl = document.getElementById('success-state');
+    if (!successEl) return;
+    successEl.textContent = 'Decision recorded successfully.';
+    successEl.style.display = 'block';
+    successEl.removeAttribute('aria-hidden');
+    setTimeout(function() {
+      successEl.style.display = 'none';
+      successEl.setAttribute('aria-hidden', 'true');
+    }, 4000);
+  });
+</script>
+{% endblock %}

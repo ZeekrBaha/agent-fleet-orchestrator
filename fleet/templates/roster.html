@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% from "_macros.html" import agent_card, status_badge %}
+
+{% block title %}Agent Roster{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <i data-lucide="layout-grid" style="width:20px;height:20px;stroke-width:1.5;color:var(--accent)" aria-hidden="true"></i>
+  <h1 class="page-title">Agent Roster</h1>
+
+  {% if scopes %}
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+    <form method="get" action="/dashboard/" style="display:flex;gap:8px;align-items:center;">
+      <label for="scope-filter" class="text-muted" style="font-size:12px;">Scope</label>
+      <select id="scope-filter" name="scope" onchange="this.form.submit()" style="font-size:13px;">
+        <option value="" {% if not current_scope %}selected{% endif %}>All</option>
+        {% for s in scopes %}
+        <option value="{{ s }}" {% if current_scope == s %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <button class="btn btn-primary" onclick="window.location='/dashboard/new-orchestrator'" aria-label="Create new orchestrator agent">
+      <i data-lucide="plus" style="width:16px;height:16px;stroke-width:1.5" aria-hidden="true"></i>
+      New Orchestrator
+    </button>
+  </div>
+  {% endif %}
+</div>
+
+<div class="page-body">
+  {% if error %}
+  <div class="error-banner" role="alert">
+    <i data-lucide="alert-triangle" style="width:16px;height:16px;stroke-width:1.5;flex-shrink:0" aria-hidden="true"></i>
+    <span>Could not load agents — backend unreachable: {{ error }}</span>
+    <button class="btn btn-ghost btn-sm" onclick="window.location.reload()" style="margin-left:auto;" aria-label="Retry loading agents">
+      <i data-lucide="refresh-cw" style="width:14px;height:14px;stroke-width:1.5" aria-hidden="true"></i>
+      Retry
+    </button>
+  </div>
+  {% endif %}
+
+  {% if not error and agents | length == 0 %}
+  <!-- Empty state -->
+  <div class="empty-state" role="status">
+    <i data-lucide="box" style="width:40px;height:40px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+    <p class="empty-state-title">No agents yet.</p>
+    <p class="text-muted">Create an orchestrator to get started.</p>
+    <button class="btn btn-primary" aria-label="Create new orchestrator agent">
+      <i data-lucide="plus" style="width:16px;height:16px;stroke-width:1.5" aria-hidden="true"></i>
+      New Orchestrator
+    </button>
+  </div>
+
+  {% elif not error %}
+  <!-- Agent table -->
+  <div class="card" style="overflow-x:auto;">
+    <table class="data-table" aria-label="Agent roster">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Role</th>
+          <th>Model</th>
+          <th>Status</th>
+          <th>Context</th>
+          <th>Cost today</th>
+          <th>Last activity</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="agent-roster-tbody">
+        {% for agent in agents %}
+          {{ agent_card(agent, relative_time, format_cost) }}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% else %}
+  <!-- Loading skeleton (shown when JS-driven fetch is pending) -->
+  <div class="card" style="overflow-x:auto;">
+    <table class="data-table" aria-label="Loading agents">
+      <thead>
+        <tr>
+          <th>Name</th><th>Role</th><th>Model</th><th>Status</th>
+          <th>Context</th><th>Cost today</th><th>Last activity</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for _ in range(3) %}
+        <tr class="skeleton-row" aria-hidden="true">
+          <td><div class="skeleton skeleton-cell" style="width:120px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:80px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:140px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:90px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:80px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:60px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:70px"></div></td>
+          <td><div class="skeleton skeleton-cell" style="width:180px"></div></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

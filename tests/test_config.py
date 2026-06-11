@@ -29,13 +29,18 @@ class TestValidateForStartup:
         # Must not raise
         s.validate_for_startup()
 
+    def test_ipv6_localhost_with_empty_token_succeeds(self) -> None:
+        s = Settings(host="::1", api_token="")
+        # Must not raise
+        s.validate_for_startup()
+
     def test_non_local_bind_with_empty_token_raises(self) -> None:
         s = Settings(host="0.0.0.0", api_token="")
         with pytest.raises(ConfigurationError):
             s.validate_for_startup()
 
     def test_non_local_bind_with_token_succeeds(self) -> None:
-        s = Settings(host="0.0.0.0", api_token="some-secret-token")
+        s = Settings(host="0.0.0.0", api_token="test-token-placeholder")
         # Must not raise
         s.validate_for_startup()
 

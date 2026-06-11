@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+
+{% block title %}Worktree — {{ worktree.branch if worktree else 'Unknown' }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="/dashboard/" aria-label="Back to roster">
+    <i data-lucide="arrow-left" style="width:20px;height:20px;stroke-width:1.5;color:var(--text-secondary)" aria-hidden="true"></i>
+  </a>
+  <i data-lucide="git-branch" style="width:20px;height:20px;stroke-width:1.5;color:var(--accent)" aria-hidden="true"></i>
+  <h1 class="page-title">
+    {% if worktree %}
+    <span class="mono">{{ worktree.branch }}</span>
+    {% else %}
+    Worktree
+    {% endif %}
+  </h1>
+  {% if worktree %}
+  <span class="text-muted" style="font-size:13px;">
+    ← <span class="mono">{{ worktree.base_branch }}</span>
+  </span>
+  {% endif %}
+</div>
+
+<div class="page-body" id="worktree-body" data-state="{{ 'error' if error else 'success' }}">
+  {% if error %}
+  <div id="error-state" class="error-banner" role="alert">
+    <i data-lucide="alert-triangle" style="width:16px;height:16px;stroke-width:1.5;flex-shrink:0" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+  </div>
+  {% else %}
+  <div id="error-state" class="error-banner" role="alert" style="display:none;" aria-hidden="true"></div>
+  {% endif %}
+
+  {% if worktree %}
+  <!-- Worktree metadata -->
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;">
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Branch</div>
+        <div class="mono">{{ worktree.branch }}</div>
+      </div>
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Base</div>
+        <div class="mono">{{ worktree.base_branch }}</div>
+      </div>
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Status</div>
+        <span class="status-badge status-{{ worktree.status }}">{{ worktree.status }}</span>
+      </div>
+      <div>
+        <div class="text-muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Path</div>
+        <div class="mono" style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ worktree.path }}">{{ worktree.path }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Owned paths -->
+  {% if worktree.owned_paths %}
+  <div class="card" style="margin-bottom:16px;">
+    <div class="section-header" style="margin-bottom:12px;">Owned Paths</div>
+    {% for path in worktree.owned_paths %}
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+      <i data-lucide="folder" style="width:14px;height:14px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+      <span class="mono">{{ path }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Dirty files (placeholder — real diff requires git integration) -->
+  <div class="card" style="margin-bottom:16px;">
+    <div class="section-header" style="margin-bottom:12px;">Changes</div>
+
+    {% if worktree.status == 'active' %}
+    <div class="empty-state" style="padding:24px;">
+      <i data-lucide="git-commit" style="width:24px;height:24px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+      <p class="text-muted" style="font-size:13px;">Worktree is clean — no uncommitted changes.</p>
+    </div>
+    {% else %}
+    <div class="empty-state" style="padding:24px;">
+      <i data-lucide="check-circle" style="width:24px;height:24px;stroke-width:1.5;color:var(--diff-add-fg)" aria-hidden="true"></i>
+      <p class="text-muted" style="font-size:13px;">Worktree is {{ worktree.status }} — no pending changes.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Actions -->
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn btn-ghost"
+            hx-post="/api/tools/check_conflict"
+            hx-vals='{"worktree_id": "{{ worktree.id }}"}'
+            hx-target="#conflict-result"
+            hx-swap="innerHTML"
+            aria-label="Check for merge conflicts">
+      <i data-lucide="git-merge" style="width:16px;height:16px;stroke-width:1.5" aria-hidden="true"></i>
+      Check Conflicts
+    </button>
+
+    {% if worktree.task_id %}
+    <a href="/dashboard/tasks/{{ worktree.task_id }}/validation"
+       class="btn btn-primary"
+       aria-label="Open merge flow for this worktree">
+      <i data-lucide="check-square" style="width:16px;height:16px;stroke-width:1.5" aria-hidden="true"></i>
+      Open Merge Flow
+    </a>
+    {% endif %}
+  </div>
+
+  <div id="conflict-result" style="margin-top:12px;" aria-live="polite"></div>
+  {% endif %}
+</div>
+{% endblock %}

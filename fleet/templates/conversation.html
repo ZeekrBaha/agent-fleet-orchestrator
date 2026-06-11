@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+
+{% block title %}Conversation — {{ agent.name if agent else 'Unknown' }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="/dashboard/" aria-label="Back to roster">
+    <i data-lucide="arrow-left" style="width:20px;height:20px;stroke-width:1.5;color:var(--text-secondary)" aria-hidden="true"></i>
+  </a>
+  {% if agent %}
+  <h1 class="page-title">{{ agent.name }}</h1>
+  {{ status_badge(agent.status) }}
+  <span class="mono text-muted" style="font-size:11px;margin-left:8px;">{{ agent.scope }}</span>
+  {% else %}
+  <h1 class="page-title">Conversation</h1>
+  {% endif %}
+</div>
+
+<div class="page-body" id="conversation-body" data-state="{{ 'error' if error else 'success' }}">
+  {% if error %}
+  <div id="error-state" class="error-banner" role="alert">
+    <i data-lucide="alert-triangle" style="width:16px;height:16px;stroke-width:1.5;flex-shrink:0" aria-hidden="true"></i>
+    <span>{{ error }}</span>
+  </div>
+  {% else %}
+  <div id="error-state" class="error-banner" role="alert" style="display:none;" aria-hidden="true"></div>
+  {% endif %}
+
+  {% if agent %}
+  <!-- Message thread -->
+  <div class="card" style="margin-bottom:16px;">
+    <div id="message-thread"
+         style="max-height:600px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"
+         data-scope="{{ agent.scope }}"
+         data-last-event-id="{{ last_event_id }}"
+         aria-live="polite"
+         aria-label="Message thread for {{ agent.name }}">
+
+      {% if events | length == 0 %}
+      <div class="empty-state" role="status">
+        <i data-lucide="message-square" style="width:32px;height:32px;stroke-width:1.5;color:var(--text-muted)" aria-hidden="true"></i>
+        <p class="empty-state-title">No messages yet.</p>
+        <p class="text-muted">Send a message to start.</p>
+      </div>
+      {% endif %}
+
+      {% for event in events %}
+        {% if event.type == 'turn_end' %}
+        <!-- Turn separator -->
+        <div class="turn-separator" style="text-align:center;padding:8px 0;">
+          <span class="mono text-muted" style="font-size:11px;">{{ event.summary }}</span>
+        </div>
+        {% elif event.type == 'tool_call' %}
+        <!-- Tool call (collapsed by default) -->
+        <div class="message-row tool-call" style="padding:4px 8px;">
+          <details>
+            <summary style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--overlay);border-radius:6px;">
+              <i data-lucide="zap" style="width:14px;height:14px;stroke-width:1.5;color:var(--accent)" aria-hidden="true"></i>
+              <span class="mono" style="font-size:12px;color:var(--accent);">tool_call</span>
+              <span class="text-muted" style="font-size:12px;">{{ event.summary }}</span>
+            </summary>
+            <pre style="margin-top:8px;padding:10px;background:var(--overlay);border-radius:6px;font-size:11px;overflow:auto;">{{ event.payload | tojson(indent=2) }}</pre>
+          </details>
+        </div>
+        {% elif event.type == 'tool_result' %}
+        <!-- Tool result -->
+        <div class="message-row tool-result" style="padding:4px 8px;">
+          <details>
+            <summary style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--overlay);border-radius:6px;">
+              <i data-lucide="check-circle" style="width:14px;height:14px;stroke-width:1.5;color:var(--diff-add-fg)" aria-hidden="true"></i>
+              <span class="mono" style="font-size:12px;color:var(--diff-add-fg);">tool_result</span>
+              <span class="text-muted" style="font-size:12px;">{{ event.summary }}</span>
+            </summary>
+            <pre style="margin-top:8px;padding:10px;background:var(--overlay);border-radius:6px;font-size:11px;overflow:auto;">{{ event.payload | tojson(indent=2) }}</pre>
+          </details>
+        </div>
+        {% elif event.type == 'agent.message' %}
+        <!-- Agent message — left aligned -->
+        <div class="message-row agent-msg" style="display:flex;padding:4px 8px;max-width:80%;">
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px 10px 10px 2px;padding:8px 12px;font-size:14px;">
+            {% if event.payload.get('from') %}
+            <div class="mono text-muted" style="font-size:11px;margin-bottom:4px;">[from: {{ event.payload.from }}]</div>
+            {% endif %}
+            <p>{{ event.summary }}</p>
+          </div>
+        </div>
+        {% else %}
+        <!-- Generic event row -->
+        <div class="message-row" style="padding:4px 8px;display:flex;align-items:center;gap:8px;">
+          <span class="mono text-muted" style="font-size:11px;min-width:80px;">{{ event.type }}</span>
+          <span style="font-size:14px;">{{ event.summary }}</span>
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Send message form -->
+  <div class="card">
+    <form class="inline-form"
+          hx-post="/api/agents/{{ agent.id }}/messages"
+          hx-target="#send-status"
+          hx-swap="innerHTML"
+          style="gap:8px;">
+      <input type="hidden" name="sender" value="dashboard">
+      <input type="text" name="message" id="msg-input"
+             placeholder="Send a message to {{ agent.name }}…"
+             style="flex:1;"
+             aria-label="Message to {{ agent.name }}"
+             required>
+      <button type="submit" class="btn btn-primary" aria-label="Send message">
+        <i data-lucide="send" style="width:16px;height:16px;stroke-width:1.5" aria-hidden="true"></i>
+        Send
+      </button>
+    </form>
+    <div id="send-status" aria-live="polite" style="font-size:12px;color:var(--text-muted);margin-top:4px;"></div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+{% if agent %}
+<script>
+  // Initialize SSE live tail for this agent's scope
+  window.__SSE_SCOPE = {{ agent.scope | tojson }};
+  window.__AGENT_ID = {{ agent.id | tojson }};
+</script>
+{% endif %}
+{% endblock %}
