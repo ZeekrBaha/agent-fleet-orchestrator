@@ -14,6 +14,7 @@ Handlers must return a plain ``dict[str, object]``.  They may raise
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -41,6 +42,8 @@ from fleet.api.tool_schemas import (
 from fleet.policy.service import PolicyDenied
 from fleet.workspace.gitops import GitError, git_run
 from fleet.workspace.worktree_service import DirtyRepoError, OverlapError, WorktreeError
+
+logger = logging.getLogger(__name__)
 
 # Per-scope asyncio.Lock to serialize spawn-cap checks (P1-20 TOCTOU fix).
 # Without this lock, concurrent _handle_spawn_worker calls for the same scope
@@ -318,7 +321,14 @@ async def _handle_record_validation(
                         ),
                     )
                 ).strip()
-            except GitError:
+            except (GitError, OSError) as _exc:
+                logger.warning(
+                    "SHA resolution failed for agent %r worktree %r: %s — "
+                    "evidence will be recorded without commit binding",
+                    calling_agent.worktree_id,
+                    worktree.path,
+                    _exc,
+                )
                 commit_sha = None
 
     row_id: int = await evidence_svc.record_evidence(

@@ -1,8 +1,10 @@
 # Agent Fleet Orchestrator
 
+[![CI](https://github.com/ZeekrBaha/agent-fleet-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/ZeekrBaha/agent-fleet-orchestrator/actions/workflows/ci.yml)
+
 > **One sentence:** a self-contained Python server that spawns, supervises, and merges AI coding agents — each in its own git worktree — with policy enforcement, evidence-gated merges, budget controls, an approval queue, and a live web dashboard.
 
-> **Status (measured, offline):** MVP complete and verified — `uv run pytest -q -m "not live and not slow"` is green (**191 tests pass**), `ruff` clean, `mypy` clean across 52 source files, 11 Playwright dashboard smoke tests pass.
+> **Status (measured, offline):** MVP complete and verified — `uv run pytest -q` is green (**371 tests pass**), `ruff` clean, `mypy` clean across 54 source files, 11 Playwright dashboard smoke tests pass.
 >
 > **Implemented:** agent lifecycle (spawn → turn → compact → hibernate → merge) · git worktree isolation · dirty-repo guard · inbox messaging with restart recovery · SSE event stream · MCP tool server (out-of-process) · role-manifest policy (fail-closed) · evidence-gated squash merge · approval queue · per-agent USD budget · context compaction with typed project memory · reviewer role · web dashboard (6 views, htmx, live SSE tail) · ops CLI (`fleet doctor` + `fleet backup`) · production deployment guide.
 >
@@ -50,6 +52,36 @@ User / Orchestrator agent
         │          run_tests · request_merge · ...
         ▼
   Agent turn (Claude or MockBackend)
+```
+
+### Architecture
+
+```mermaid
+graph TD
+    User["User / Orchestrator agent"]
+
+    subgraph Fleet["Fleet server (FastAPI + asyncio + SQLite WAL)"]
+        AgentSvc["Agent Service\nlifecycle · turns · compaction · budgets"]
+        Backend["Backend\nClaude / Mock"]
+        WorkspaceSvc["Workspace Service\ngit worktrees · dirty-repo guard"]
+        PolicySvc["Policy Service\nrole manifests · fail-closed"]
+        ReviewSvc["Review / Merge Service\nconflict sim · evidence gate · squash"]
+        ApprovalQ["Approval Queue\nhuman-in-the-loop"]
+        EventLog["Event Log\nappend-only · SSE hub · Dashboard"]
+    end
+
+    MCPServer["MCP Tool Server\n(separate process, token-auth)"]
+    AgentTurn["Agent turn\n(Claude or MockBackend)"]
+
+    User -->|"POST /api/agents\nPOST /api/agents/{id}/message\nGET /api/agents/{id}/events"| Fleet
+    AgentSvc --> Backend
+    AgentSvc --> WorkspaceSvc
+    AgentSvc --> PolicySvc
+    AgentSvc --> ReviewSvc
+    ReviewSvc --> ApprovalQ
+    AgentSvc --> EventLog
+    Fleet -->|stdio MCP| MCPServer
+    MCPServer --> AgentTurn
 ```
 
 Fleet treats the event log as the source of truth. Every mutation emits an event first; agent table rows are derived state (ADR-004). A crash mid-turn means the next server start replays the log and restores every agent to its last durable state.
