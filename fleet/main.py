@@ -27,6 +27,8 @@ from fleet.api.events import router as events_router
 from fleet.api.merge import router as merge_router
 from fleet.api.review import router as review_router
 from fleet.api.tools import router as tools_router
+from fleet.api.workspaces import router as workspaces_router
+from fleet.api.workspaces import set_workspace_service, set_worktree_service
 from fleet.approvals.service import ApprovalService
 from fleet.config import Settings
 from fleet.dashboard.router import router as dashboard_router
@@ -101,6 +103,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         merge_svc=merge_svc,
     )
     _tools_api.set_policy_service(policy_svc)
+    set_workspace_service(workspace_svc)
+    set_worktree_service(worktree_svc)
+
+    await agent_svc.restore_sessions()
 
     # Events router reads from app.state at request time (no set_ function).
     app.state.event_service = event_svc
@@ -115,6 +121,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    await agent_svc.stop_all()
     await manager.close()
 
 
@@ -125,4 +132,5 @@ app.include_router(tools_router)
 app.include_router(approvals_router)
 app.include_router(merge_router)
 app.include_router(review_router)
+app.include_router(workspaces_router)
 app.include_router(dashboard_router)

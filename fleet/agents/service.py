@@ -326,6 +326,15 @@ class AgentService:
                     agent_id, scope, backend, prior_context=prior_context
                 )
 
+    async def stop_all(self) -> None:
+        """Cancel all active session tasks and wait for them to finish.
+
+        Called during graceful shutdown so sessions drain before the DB
+        connection is closed.
+        """
+        for agent_id in list(self._sessions.keys()):
+            await self._stop_session(agent_id)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
