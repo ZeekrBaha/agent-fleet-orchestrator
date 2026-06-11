@@ -344,11 +344,15 @@ async def dispatch_tool(
         ) from exc
     # -------------------------------------------------------------------------
 
-    # Pass policy context to handlers that need it (spawn_worker rate-limiting).
+    # Pass policy context and resolved identity to handlers.
+    # _authenticated_agent_id is the canonical agent_id from the auth layer —
+    # token-derived for per-agent calls, body-derived for admin impersonation.
+    # Handlers must prefer this over inp.agent_id for any attribution use.
     svcs_with_ctx = {
         **svcs,
         "_policy_svc": policy_svc,
         "_calling_agent": calling_agent,
+        "_authenticated_agent_id": agent_id,
     }
 
     try:

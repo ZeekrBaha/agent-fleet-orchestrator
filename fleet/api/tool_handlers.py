@@ -129,7 +129,7 @@ async def _handle_spawn_worker(
             role=inp.role,
             backend=_make_backend(inp.backend_type),
             model=inp.model,
-            parent_id=inp.agent_id,
+            parent_id=svcs.get("_authenticated_agent_id") or inp.agent_id,
             repository_id=inp.repository_id,
             budget_soft_usd=inp.budget_soft_usd,
             budget_hard_usd=inp.budget_hard_usd,
@@ -190,8 +190,9 @@ async def _handle_send_message(
     inp: SendMessageInput, svcs: dict[str, Any]
 ) -> dict[str, object]:
     agent_svc = svcs["agent_svc"]
+    caller_id = svcs.get("_authenticated_agent_id") or inp.agent_id
     inbox_id = await agent_svc.send_message(
-        inp.target_agent_id, inp.agent_id, inp.message
+        inp.target_agent_id, caller_id, inp.message
     )
     return {"inbox_id": inbox_id}
 
@@ -297,7 +298,9 @@ async def _handle_record_validation(
         check_name=inp.check_name,
         status=inp.status,
         output=inp.output,
-        recorded_by=inp.recorded_by if inp.recorded_by else inp.agent_id,
+        recorded_by=inp.recorded_by if inp.recorded_by else (
+            svcs.get("_authenticated_agent_id") or inp.agent_id
+        ),
         recorded_by_role=calling_role if calling_role else None,
     )
     if inp.check_name == "review" and calling_role == "reviewer":
@@ -310,7 +313,7 @@ async def _handle_record_validation(
             inp.scope,
             "review_verdict",
             f"reviewer verdict: {inp.status}",
-            agent_id=inp.agent_id,
+            agent_id=svcs.get("_authenticated_agent_id") or inp.agent_id,
             payload={
                 "task_id": inp.task_id,
                 "verdict": inp.status,
@@ -329,7 +332,7 @@ async def _handle_report_issue(
         inp.scope,
         "error",
         inp.title,
-        agent_id=inp.agent_id,
+        agent_id=svcs.get("_authenticated_agent_id") or inp.agent_id,
         payload={"severity": inp.severity, "description": inp.description},
     )
     return {"event_id": event_id, "severity": inp.severity}
@@ -343,7 +346,7 @@ async def _handle_update_progress(
         inp.scope,
         "state_change",
         inp.message,
-        agent_id=inp.agent_id,
+        agent_id=svcs.get("_authenticated_agent_id") or inp.agent_id,
         payload={"percent": inp.percent, "message": inp.message},
     )
     return {"event_id": event_id}
@@ -368,7 +371,9 @@ async def _handle_request_approval(
             {
                 "id": approval_id,
                 "scope": inp.scope,
-                "requester_agent_id": inp.agent_id,
+                "requester_agent_id": (
+                    svcs.get("_authenticated_agent_id") or inp.agent_id
+                ),
                 "operation": inp.operation,
                 "rationale": inp.rationale,
                 "risk": inp.risk,
@@ -426,7 +431,7 @@ async def _handle_execute_merge(
             status_code=503, detail="merge service not available"
         )
 
-    agent_id = inp.agent_id
+    agent_id = svcs.get("_authenticated_agent_id") or inp.agent_id
 
     try:
         result = await merge_svc.execute_merge(
