@@ -13,7 +13,6 @@
   var sseBanner = document.getElementById('sse-banner');
   var activeSource = null;
   var reconnectTimer = null;
-  var lastEventId = null;
   var sseScope = null;
 
   function showBanner(text) {
@@ -27,10 +26,11 @@
     sseBanner.classList.remove('visible');
   }
 
-  function buildStreamUrl(scope, afterId) {
+  function buildStreamUrl(scope) {
     var url = '/api/events/stream?scope=' + encodeURIComponent(scope);
-    if (afterId) url += '&after_id=' + encodeURIComponent(afterId);
     // EventSource cannot send custom headers, so pass auth token as query param.
+    // Catch-up uses the Last-Event-ID header sent automatically by the browser
+    // on reconnect — the server reads it from the request header, not a query param.
     var tokenMeta = document.querySelector('meta[name="api-token"]');
     var token = tokenMeta ? tokenMeta.content : '';
     if (token) url += '&token=' + encodeURIComponent(token);
@@ -109,18 +109,15 @@
       return;
     }
 
-    if (rawEvent.lastEventId) {
-      lastEventId = rawEvent.lastEventId;
-    }
-
     // Route to whichever view is active
     appendEventRow(event);
     appendTimelineRow(event);
   }
 
-  function connectSSE(scope, afterId) {
+  function connectSSE(scope) {
     if (activeSource) { activeSource.close(); activeSource = null; }
-    var url = buildStreamUrl(scope, afterId);
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    var url = buildStreamUrl(scope);
     var source = new EventSource(url);
     activeSource = source;
 
@@ -132,16 +129,11 @@
       handleEvent(ev);
     };
 
+    // On error, show the banner and let the browser reconnect natively.
+    // The browser's EventSource automatically sends the Last-Event-ID header
+    // (from the last id: field in the stream) so catch-up resumes correctly.
     source.onerror = function () {
-      source.close();
-      activeSource = null;
       showBanner('reconnecting…');
-
-      // Exponential back-off capped at 10s
-      var delay = Math.min(10000, 1000 + Math.random() * 2000);
-      reconnectTimer = setTimeout(function () {
-        connectSSE(sseScope, lastEventId);
-      }, delay);
     };
   }
 
@@ -151,13 +143,7 @@
     if (!scope) return;
 
     sseScope = scope;
-
-    var thread = document.getElementById('message-thread');
-    if (thread) {
-      lastEventId = thread.getAttribute('data-last-event-id') || null;
-    }
-
-    connectSSE(scope, lastEventId);
+    connectSSE(scope);
   }
 
   // ── Diff expand toggle ───────────────────────────────────────────────────────

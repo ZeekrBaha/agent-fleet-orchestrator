@@ -33,7 +33,15 @@ class Subscription:
         try:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
-            pass  # Slow subscriber — drop event rather than blocking publish
+            # Slow subscriber — close the subscription so the client reconnects
+            # with Last-Event-ID and back-fills the gap. A loud reconnect beats
+            # a silent drop.
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            self._queue.put_nowait(None)  # sentinel: close the iterator
 
     def __aiter__(self) -> AsyncIterator[Event]:
         return self._iterate()

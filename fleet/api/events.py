@@ -127,16 +127,22 @@ async def stream_events(
             # where a new event arrives between the query and subscribe.
             sub = hub.subscribe(scope)
 
-            # Catch-up: replay any events the client missed.
+            # Catch-up: replay missed events in pages until exhausted.
+            # A single query is capped at 200; page until empty to avoid gaps.
             if after_id is not None:
-                catchup_events = await service.query(scope, after_id=after_id)
-                for ev in catchup_events:
-                    if await request.is_disconnected():
-                        return
-                    yield {
-                        "data": json.dumps(ev.model_dump()),
-                        "id": str(ev.id),
-                    }
+                page_after = after_id
+                while True:
+                    page = await service.query(scope, after_id=page_after, limit=200)
+                    if not page:
+                        break
+                    for ev in page:
+                        if await request.is_disconnected():
+                            return
+                        yield {
+                            "data": json.dumps(ev.model_dump()),
+                            "id": str(ev.id),
+                        }
+                    page_after = page[-1].id or page_after
 
             # Live: stream new events as they arrive.
             async for ev in sub:
