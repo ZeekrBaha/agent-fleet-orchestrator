@@ -37,6 +37,14 @@ from fleet.api.tool_schemas import (
 )
 from fleet.workspace.worktree_service import DirtyRepoError, OverlapError, WorktreeError
 
+# Role escalation policy: maps caller role → frozenset of roles it may spawn.
+# None means unrestricted (orchestrator may spawn any role).
+_SPAWN_ROLE_ALLOWLIST: dict[str, frozenset[str] | None] = {
+    "orchestrator": None,  # orchestrator can spawn any role
+    "worker": frozenset({"worker"}),
+    "reviewer": frozenset({"worker"}),
+}
+
 
 async def _handle_spawn_worker(
     inp: SpawnWorkerInput, svcs: dict[str, Any]
@@ -80,13 +88,10 @@ async def _handle_spawn_worker(
 
     # Identity binding gap: agent_id is caller-supplied; per-agent token binding is P2-1
     # Role escalation check: validate requested role against caller's allowed spawn roles.
-    # None means unrestricted (orchestrator may spawn any role).
-    _SPAWN_ROLE_ALLOWLIST: dict[str, frozenset[str] | None] = {
-        "orchestrator": None,  # orchestrator can spawn any role
-        "worker": frozenset({"worker"}),
-        "reviewer": frozenset({"worker"}),
-    }
-    caller_role = calling_agent.role if calling_agent is not None else "unknown"
+    # calling_agent is guaranteed non-None here: check_spawn_rate() above already
+    # dereferenced calling_agent.role, so it would have raised AttributeError first.
+    assert calling_agent is not None  # noqa: S101 — invariant, not user-facing
+    caller_role = calling_agent.role
     allowed_spawn_roles = _SPAWN_ROLE_ALLOWLIST.get(caller_role, frozenset({"worker"}))
     if allowed_spawn_roles is not None and inp.role not in allowed_spawn_roles:
         raise HTTPException(

@@ -368,3 +368,69 @@ async def test_worker_can_spawn_worker(
         f"Expected 200 but got {response.status_code}. "
         "Workers must be allowed to spawn other workers."
     )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_can_spawn_orchestrator(
+    db: DatabaseManager,
+    event_service: EventService,
+) -> None:
+    """An orchestrator calling spawn_worker with role='orchestrator' must succeed (200).
+
+    Orchestrators are unrestricted in _SPAWN_ROLE_ALLOWLIST (None entry),
+    so they may spawn any role including another orchestrator.
+    """
+    from unittest.mock import MagicMock
+
+    mock_record = MagicMock()
+    mock_record.id = "new-orchestrator-id"
+    mock_record.name = "sub-orchestrator"
+    mock_record.scope = "scope-1"
+    mock_record.status = "idle"
+
+    calling_agent = MagicMock()
+    calling_agent.role = "orchestrator"
+    calling_agent.status = "idle"
+
+    mock_agent_svc = AsyncMock()
+    mock_agent_svc.create_agent.return_value = mock_record
+    mock_agent_svc.get_agent.return_value = calling_agent
+    mock_agent_svc.list_agents.return_value = []
+
+    from fleet.api.auth import require_token
+    from fleet.api.tools import router, set_policy_service, set_tool_services
+    from fleet.policy.rules import load_manifest
+    from fleet.policy.service import PolicyService
+
+    set_tool_services(
+        agent_svc=mock_agent_svc,
+        event_svc=event_service,
+        workspace_svc=None,
+        worktree_svc=None,
+        db=db,
+    )
+    policy_svc = PolicyService(load_manifest(_SECURITY_P0_MANIFEST_PATH))
+    set_policy_service(policy_svc)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[require_token] = _no_auth
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/tools/spawn_worker",
+            json={
+                "agent_id": "orchestrator-agent-1",
+                "scope": "scope-1",
+                "name": "sub-orchestrator",
+                "role": "orchestrator",
+                "task_description": "Coordinate sub-tasks",
+            },
+        )
+
+    assert response.status_code == 200, (
+        f"Expected 200 but got {response.status_code}. "
+        "Orchestrators must be allowed to spawn other orchestrators (unrestricted allowlist)."
+    )
