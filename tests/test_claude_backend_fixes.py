@@ -103,6 +103,13 @@ async def test_tool_results_flushed_into_messages() -> None:
     assert block["tool_use_id"] == "tid-1"
     assert block["content"] == "result-value"
 
+    # Verify no consecutive same-role messages
+    # (Anthropic API requires alternating user/assistant roles)
+    for i in range(len(messages_sent) - 1):
+        assert messages_sent[i]["role"] != messages_sent[i + 1]["role"], (
+            f"Consecutive same-role at index {i}: {messages_sent[i]['role']}"
+        )
+
 
 async def test_send_does_not_clear_pending_tool_results() -> None:
     """P1-16: send() must not wipe pending_tool_results before events() flushes them."""

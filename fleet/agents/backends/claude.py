@@ -191,18 +191,16 @@ class ClaudeBackend:
             yield BackendError("no pending message", retryable=False)
             return
 
-        # Flush any pending tool results as a user turn before the text message.
+        # Build user content: merge tool results (if any) + text message into one turn
+        # to satisfy the Anthropic alternating-role constraint.
         if state.pending_tool_results:
-            state.messages.append(
-                {
-                    "role": "user",
-                    "content": list(state.pending_tool_results),
-                }
-            )
+            content: list[dict[str, Any]] = list(state.pending_tool_results)
+            if state.pending_message is not None:
+                content.append({"type": "text", "text": state.pending_message})
+            state.messages.append({"role": "user", "content": content})
             state.pending_tool_results.clear()
-
-        # Append user message to history
-        state.messages.append({"role": "user", "content": state.pending_message})
+        else:
+            state.messages.append({"role": "user", "content": state.pending_message})
         state.pending_message = None
 
         try:
