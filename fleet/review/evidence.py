@@ -199,16 +199,23 @@ class EvidenceService:
         if not evidence:
             return False, "No validation evidence recorded; run checks before merging"
 
+        # Build a map of check_name -> latest row (highest id wins).
+        latest: dict[str, dict[str, object]] = {}
+        for e in evidence:
+            check_name = str(e["check_name"])
+            e_id = e["id"]
+            prev = latest.get(check_name)
+            if prev is None or e_id > prev["id"]:  # type: ignore[operator]
+                latest[check_name] = e
+
         # Check reviewer verdict first — it produces a distinct failure message.
-        review_rows = [e for e in evidence if e["check_name"] == "review"]
-        if review_rows:
-            # Use the most recent review row (highest id, list is ordered by id ASC).
-            latest_review = review_rows[-1]
-            if latest_review["status"] == "fail":
+        review_row = latest.get("review")
+        if review_row is not None:
+            if review_row["status"] == "fail":
                 return False, "reviewer verdict: fail"
 
-        # Check all remaining rows for failures.
-        failing = [e for e in evidence if e["status"] == "fail"]
+        # Check all remaining checks: fail if any latest row is 'fail'.
+        failing = [e for e in latest.values() if e["status"] == "fail"]
         if failing:
             checks = ", ".join(str(e["check_name"]) for e in failing)
             return False, f"{len(failing)} failing check(s): {checks}"

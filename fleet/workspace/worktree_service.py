@@ -226,10 +226,11 @@ class WorktreeService:
                 text(
                     "INSERT INTO worktrees"
                     " (id, agent_id, repository_id, path, branch, base_branch,"
-                    "  owned_paths_json, status, created_at)"
+                    "  owned_paths_json, status, created_at, task_id)"
                     " VALUES"
                     " (:id, :agent_id, :repository_id, :path, :branch,"
-                    "  :base_branch, :owned_paths_json, :status, :created_at)"
+                    "  :base_branch, :owned_paths_json, :status, :created_at,"
+                    "  :task_id)"
                 ),
                 {
                     "id": worktree_id,
@@ -241,6 +242,7 @@ class WorktreeService:
                     "owned_paths_json": owned_json,
                     "status": "active",
                     "created_at": now,
+                    "task_id": task_id,
                 },
             )
             conn.commit()

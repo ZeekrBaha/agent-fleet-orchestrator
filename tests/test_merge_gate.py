@@ -88,14 +88,14 @@ _SQL_AGENT = (
 
 _SQL_COLS = (
     "id, agent_id, repository_id, path, branch, base_branch,"
-    " owned_paths_json, status, created_at"
+    " owned_paths_json, status, created_at, task_id"
 )
 
 _SQL_WORKTREE = (
     "INSERT INTO worktrees"
     f" ({_SQL_COLS})"
     " VALUES (:id, :agent_id, :repo_id, :path, :branch,"
-    "  'main', '[]', 'active', :now)"
+    "  'main', '[]', 'active', :now, :task_id)"
 )
 
 
@@ -108,6 +108,7 @@ async def _setup_worktree(
     worktree_id: str,
     worktree_path: Path,
     branch: str,
+    task_id: str | None = None,
 ) -> None:
     """Insert a repository, agent, and worktree record for tests."""
     now = datetime.now(UTC).isoformat()
@@ -130,6 +131,7 @@ async def _setup_worktree(
                 "path": str(worktree_path),
                 "branch": branch,
                 "now": now,
+                "task_id": task_id,
             },
         )
         conn.commit()
@@ -406,7 +408,8 @@ async def test_merge_gate_conflict_rejected(
             text("SELECT id FROM tasks WHERE branch = 'feature'"),
         ).fetchone()
     assert row is not None
-    await evidence_svc.record_evidence(row.id, "pytest", "pass", "ok")
+    conflict_task_id = row.id
+    await evidence_svc.record_evidence(conflict_task_id, "pytest", "pass", "ok")
 
     # Make a clean copy of the repo on the feature branch (no uncommitted changes)
     wt_real = tmp_path / "wt_conflict"
@@ -422,6 +425,7 @@ async def test_merge_gate_conflict_rejected(
         worktree_id=worktree_id,
         worktree_path=wt_real,
         branch="feature",
+        task_id=conflict_task_id,
     )
 
     head_before = git_run(["git", "rev-parse", "HEAD"], cwd=repo)
@@ -496,6 +500,7 @@ async def test_merge_gate_success(
         worktree_id=worktree_id,
         worktree_path=wt_path,
         branch=branch,
+        task_id=task_id,
     )
 
     merge_svc = MergeService(
@@ -743,6 +748,7 @@ async def test_merge_lock_concurrent_http(
         worktree_id=worktree_id,
         worktree_path=wt_path,
         branch=branch,
+        task_id=task_id,
     )
 
     app = _build_merge_app(db, event_service, evidence_svc)
@@ -762,7 +768,6 @@ async def test_merge_lock_concurrent_http(
     statuses = sorted(r.status_code for r in responses)
     assert statuses == [200, 409], f"Expected [200, 409], got {statuses}"
 
+    # Lock is now keyed by repo_path, so the 409 message includes the repo path.
     conflict_resp = next(r for r in responses if r.status_code == 409)
-    assert conflict_resp.json() == {
-        "detail": "merge in progress for scope concurrent-scope"
-    }
+    assert "merge in progress" in conflict_resp.json()["detail"]
