@@ -47,34 +47,26 @@ class BudgetEnforcer:
         self._db = db
         self._event_service = event_service
         self._scope_budget_hard_usd = scope_budget_hard_usd
+        # Tracks the reservation amount written to DB by check_pre_turn so
+        # record_turn_cost can reconcile actual spend against it.
+        self._pre_turn_reservation: float = 0.0
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     async def check_pre_turn(self) -> BudgetAction:
-        """Check budget BEFORE starting a turn — no cost accumulation.
+        """Atomically check and reserve budget before a turn starts.
 
-        Returns PAUSE if the agent is already at its hard limit, or if the
-        per-scope aggregate cap is exceeded.  Returns OK otherwise.
+        For agents with a hard limit: runs inside db.write() so it is
+        serialised with all other writes.  If under the limit, reserves
+        remaining budget (cost_usd = budget_hard_usd) so a concurrent caller
+        sees the limit already hit.  record_turn_cost() reconciles the actual
+        spend afterward.
+
+        Returns PAUSE if already at the hard limit or scope cap; OK otherwise.
         """
-        with self._db.read_connection() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT cost_usd, budget_hard_usd FROM agents WHERE id = :id"
-                ),
-                {"id": self._agent_id},
-            ).fetchone()
-
-        if row is None:
-            return BudgetAction.OK
-
-        cost_usd: float = row.cost_usd or 0.0
-        budget_hard: float | None = row.budget_hard_usd
-
-        if budget_hard is not None and cost_usd >= budget_hard:
-            return BudgetAction.PAUSE
-
+        # Scope aggregate cap — read-only check (no per-scope reservation needed).
         if self._scope_budget_hard_usd is not None:
             with self._db.read_connection() as conn:
                 scope_row = conn.execute(
@@ -91,24 +83,55 @@ class BudgetEnforcer:
                 )
                 return BudgetAction.PAUSE
 
-        return BudgetAction.OK
+        # Per-agent hard limit: atomic check + reserve via single write op.
+        def _check_and_reserve(conn: Connection) -> tuple[BudgetAction, float]:
+            row = conn.execute(
+                text(
+                    "SELECT cost_usd, budget_hard_usd FROM agents WHERE id = :id"
+                ),
+                {"id": self._agent_id},
+            ).fetchone()
+            if row is None:
+                return (BudgetAction.OK, 0.0)
+            cost_usd: float = row.cost_usd or 0.0
+            budget_hard: float | None = row.budget_hard_usd
+            if budget_hard is None:
+                return (BudgetAction.OK, 0.0)
+            if cost_usd >= budget_hard:
+                return (BudgetAction.PAUSE, 0.0)
+            # Reserve all remaining budget so a concurrent check sees the cap.
+            reservation = budget_hard - cost_usd
+            conn.execute(
+                text("UPDATE agents SET cost_usd = :cap WHERE id = :id"),
+                {"cap": budget_hard, "id": self._agent_id},
+            )
+            conn.commit()
+            return (BudgetAction.OK, reservation)
+
+        action, reservation = await self._db.write(_check_and_reserve)
+        self._pre_turn_reservation = reservation
+        return action
 
     async def record_turn_cost(self, turn_end: TurnEnd) -> BudgetAction:
-        """Accumulate turn cost and enforce budget limits.
+        """Reconcile pre-turn reservation and record actual turn cost.
+
+        If check_pre_turn reserved budget (wrote cost_usd = budget_hard_usd),
+        the net delta is actual_cost - reservation.  This may be negative (if
+        actual < reservation), which correctly refunds the unused portion.
 
         Steps:
-          1. Add turn_end.cost_usd to agents.cost_usd (atomic DB update).
-          2. Read the updated total and budget limits.
+          1. Compute net_delta = actual - reservation (0.0 if no reservation).
+          2. Apply net_delta atomically to agents.cost_usd.
           3. If new total >= budget_hard_usd: emit budget_alert (level=hard),
-             return BudgetAction.PAUSE.  (AgentSession handles approval creation.)
-          4. If new total >= budget_soft_usd (but < hard): emit budget_alert
-             (level=soft), return BudgetAction.WARN.
+             return BudgetAction.PAUSE.
+          4. If new total >= budget_soft_usd: emit budget_alert (level=soft),
+             return BudgetAction.WARN.
           5. Else: return BudgetAction.OK.
-          6. If both limits are NULL, always return BudgetAction.OK.
         """
-        new_total, budget_soft, budget_hard = await self._accumulate_cost(
-            turn_end.cost_usd
-        )
+        reservation = self._pre_turn_reservation
+        self._pre_turn_reservation = 0.0
+        net_delta = turn_end.cost_usd - reservation
+        new_total, budget_soft, budget_hard = await self._accumulate_cost(net_delta)
 
         # No limits configured — nothing to enforce
         if budget_soft is None and budget_hard is None:
