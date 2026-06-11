@@ -11,6 +11,7 @@ items and P3 cleanup from `docs/reviews/pr1-review-fixes.md`.
 - A3 (P2-3) Prompt-injection hardening — commit `50b3dea` — 284 tests green
 - A2 (P2-2) Evidence trust model — commit `e3fef88` — 288 tests green
 - B2 (P2-8+9) Schema + timestamp unification — commit `008c626` — 294 tests green
+- B3 (P2-5) Async hygiene sweep — commit `b654b2d` — 304 tests green
 
 **Branch strategy:** merge `fleet/phase-1-scaffold` first. Then one branch per phase
 below (`fleet/p2-security`, `fleet/p2-infra`, `fleet/p3-cleanup`). Do not mix phases
@@ -172,7 +173,7 @@ applies correctly; pending `0002` actually runs (the bug 0001-hardcoding hid).
 outside `util/time.py`; doctor staleness check correct across restored old data;
 evidence join works with TEXT task ids.
 
-### B3 (P2-5). Async hygiene sweep
+### B3 (P2-5). Async hygiene sweep — DONE `b654b2d`
 
 **Problem.** Sync git on the event loop: `worktree_service.py:190,215,331,405,426`;
 `workspace/service.py:133`; ConflictChecker in `tool_handlers.py:212`. Sync DB reads:
