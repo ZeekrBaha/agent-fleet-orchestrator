@@ -12,6 +12,7 @@ Routes:
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -609,12 +610,12 @@ async def decide_approval(
         )
     except ValueError as exc:
         return HTMLResponse(
-            f"<p class='error-text'>Decision failed: {exc}</p>",
+            f"<p class='error-text'>Decision failed: {html.escape(str(exc))}</p>",
             status_code=400,
         )
     except SQLAlchemyError as exc:  # DB write failure
         return HTMLResponse(
-            f"<p class='error-text'>Decision failed: {exc}</p>",
+            f"<p class='error-text'>Decision failed: {html.escape(str(exc))}</p>",
             status_code=500,
         )
 
