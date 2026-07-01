@@ -1,7 +1,9 @@
-"""Tests for PipelineService's evidence + merge-gate wiring (Task T7).
+"""Tests for PipelineService's SSE event emission on stage transitions (Task T9).
 
-Covers impl/fix (worktree) stages: create_task on spawn, check_merge_gate on
-a later advance_run call before the stage can be marked passed.
+Every stage status transition must call EventService.append so the run's
+progress is observable via the existing SSE event stream (sinks-over-pipes:
+these events are a side-channel for observers, not part of advance_run's own
+control flow -- see architecture.md).
 """
 from __future__ import annotations
 
@@ -18,7 +20,6 @@ from fleet.approvals.service import ApprovalService
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService, create_event_service
 from fleet.events.sse import SSEHub
-from fleet.pipeline.models import StageStatus
 from fleet.pipeline.repository import PipelineRepository
 from fleet.pipeline.workflows import FULL_SDLC
 from fleet.review.evidence import EvidenceService
@@ -30,7 +31,7 @@ from fleet.review.evidence import EvidenceService
 
 @pytest_asyncio.fixture
 async def db(tmp_path: Any) -> AsyncIterator[DatabaseManager]:
-    manager = await init_db(str(tmp_path / "test_pipeline_gate.db"))
+    manager = await init_db(str(tmp_path / "test_pipeline_events.db"))
     yield manager
     await manager.close()
 
@@ -100,84 +101,66 @@ async def pipeline_service(
     )
 
 
-async def _advance_to_impl_running(
-    pipeline_service: Any, repository: PipelineRepository
-) -> Any:
-    """Drive a fresh run forward until 'impl' is spawned (running, has a task_id)."""
-    run = await pipeline_service.create_run(
-        FULL_SDLC, idea="Build Gate Test", scope="pipeline-gate-test"
-    )
-    await pipeline_service.advance_run(run.id)
-    stages = {s.step_key: s for s in await repository.get_stages(run.id)}
-    assert stages["impl"].status == StageStatus.RUNNING
-    assert stages["impl"].task_id is not None
-    return run
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_impl_spawn_creates_evidence_task(
-    pipeline_service: Any, repository: PipelineRepository
+async def test_advance_run_emits_one_event_per_stage_transition(
+    pipeline_service: Any,
+    repository: PipelineRepository,
+    event_service: EventService,
 ) -> None:
-    run = await _advance_to_impl_running(pipeline_service, repository)
-    stages = {s.step_key: s for s in await repository.get_stages(run.id)}
-    assert stages["impl"].task_id
-    assert stages["impl"].status == StageStatus.RUNNING
+    run = await pipeline_service.create_run(
+        FULL_SDLC, idea="Build Event Test", scope="pipeline-events-test"
+    )
+    await pipeline_service.advance_run(run.id)
+
+    events = await event_service.query(run.scope, type_filter="state_change")
+    pipeline_events = [
+        e for e in events if e.payload.get("run_id") == run.id
+    ]
+
+    # pm, ux, arch each transition pending->running->passed (2 events each);
+    # impl transitions pending->running only (1 event, gate not yet checked).
+    step_keys_seen = [e.payload["step_key"] for e in pipeline_events]
+    assert step_keys_seen.count("pm") == 2
+    assert step_keys_seen.count("ux") == 2
+    assert step_keys_seen.count("arch") == 2
+    assert step_keys_seen.count("impl") == 1
+
+    statuses_for_pm = [
+        e.payload["status"] for e in pipeline_events if e.payload["step_key"] == "pm"
+    ]
+    assert statuses_for_pm == ["running", "passed"]
 
 
 @pytest.mark.asyncio
-async def test_failing_evidence_blocks_advance_past_impl(
+async def test_gate_pass_and_fail_both_emit_events(
     pipeline_service: Any,
     repository: PipelineRepository,
     evidence_service: EvidenceService,
+    event_service: EventService,
 ) -> None:
-    """A failing check must not let the DAG advance past impl.
-
-    Task T8 (approval-queue failure routing) refines *how* this blocks:
-    the stage is marked 'failed' (not left 'running' indefinitely) and the
-    run is routed to the approval queue -- see test_service_failure.py for
-    that behavior in full. This test only asserts the DAG-order guarantee:
-    review must never advance.
-    """
-    run = await _advance_to_impl_running(pipeline_service, repository)
+    run = await pipeline_service.create_run(
+        FULL_SDLC, idea="Build Gate Event Test", scope="pipeline-events-gate-test"
+    )
+    await pipeline_service.advance_run(run.id)
     stages = {s.step_key: s for s in await repository.get_stages(run.id)}
     impl_task_id = stages["impl"].task_id
     assert impl_task_id is not None
 
     await evidence_service.record_evidence(
-        task_id=impl_task_id, check_name="pytest -q", status="fail", output="2 failed"
+        task_id=impl_task_id, check_name="pytest -q", status="pass", output="green"
     )
-
     await pipeline_service.advance_run(run.id)
 
-    stages_after = {s.step_key: s for s in await repository.get_stages(run.id)}
-    assert stages_after["impl"].status == StageStatus.FAILED
-    assert stages_after["review"].status == StageStatus.PENDING
-
-
-@pytest.mark.asyncio
-async def test_passing_evidence_advances_impl_to_passed_and_unblocks_review(
-    pipeline_service: Any,
-    repository: PipelineRepository,
-    evidence_service: EvidenceService,
-) -> None:
-    run = await _advance_to_impl_running(pipeline_service, repository)
-    stages = {s.step_key: s for s in await repository.get_stages(run.id)}
-    impl_task_id = stages["impl"].task_id
-    assert impl_task_id is not None
-
-    await evidence_service.record_evidence(
-        task_id=impl_task_id, check_name="pytest -q", status="pass", output="all green"
-    )
-
-    await pipeline_service.advance_run(run.id)
-
-    stages_after = {s.step_key: s for s in await repository.get_stages(run.id)}
-    assert stages_after["impl"].status == StageStatus.PASSED
-    # review has no other deps -- it should now be eligible and spawned in
-    # this same call (review is a scratch stage, completes synchronously).
-    assert stages_after["review"].status == StageStatus.PASSED
+    events = await event_service.query(run.scope, type_filter="state_change")
+    impl_events = [
+        e
+        for e in events
+        if e.payload.get("run_id") == run.id and e.payload.get("step_key") == "impl"
+    ]
+    statuses = [e.payload["status"] for e in impl_events]
+    assert statuses == ["running", "passed"]

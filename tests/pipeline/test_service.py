@@ -85,6 +85,7 @@ async def pipeline_service(
     agent_service: AgentService,
     evidence_service: EvidenceService,
     approval_service: ApprovalService,
+    event_service: EventService,
 ) -> Any:
     from fleet.pipeline.service import PipelineService
 
@@ -94,6 +95,7 @@ async def pipeline_service(
         agent_service=agent_service,
         evidence_service=evidence_service,
         approval_service=approval_service,
+        event_service=event_service,
     )
 
 

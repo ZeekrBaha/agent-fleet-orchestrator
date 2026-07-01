@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from fleet.agents.service import AgentService
     from fleet.approvals.service import ApprovalService
     from fleet.db import DatabaseManager
+    from fleet.events.service import EventService
     from fleet.pipeline.models import Workflow
     from fleet.pipeline.repository import PipelineRepository
     from fleet.review.evidence import EvidenceService
@@ -58,12 +59,32 @@ class PipelineService:
         agent_service: AgentService,
         evidence_service: EvidenceService,
         approval_service: ApprovalService,
+        event_service: EventService,
     ) -> None:
         self._db = db
         self._repo = repo
         self._agents = agent_service
         self._evidence = evidence_service
         self._approvals = approval_service
+        self._events = event_service
+
+    async def _emit_stage_event(
+        self,
+        run: PipelineRun,
+        step_key: str,
+        status: StageStatus,
+        *,
+        agent_id: str | None,
+    ) -> None:
+        """SSE side-channel for stage transitions (sinks-over-pipes: this is
+        for observers only, never advance_run's own control flow)."""
+        await self._events.append(
+            run.scope,
+            "state_change",
+            f"pipeline stage {step_key} -> {status.value}",
+            agent_id=agent_id,
+            payload={"run_id": run.id, "step_key": step_key, "status": status.value},
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -149,12 +170,20 @@ class PipelineService:
                     await self._repo.update_stage_status(
                         stage.id, StageStatus.PASSED
                     )
+                    await self._emit_stage_event(
+                        run, stage.step_key, StageStatus.PASSED,
+                        agent_id=stage.agent_id,
+                    )
                 elif reason != _NOT_READY_REASON:
                     # A real failure (failing check, stale evidence, missing
                     # reviewer verdict) -- not just "no evidence yet". Halt
                     # the DAG and route to the approval queue.
                     await self._repo.update_stage_status(
                         stage.id, StageStatus.FAILED
+                    )
+                    await self._emit_stage_event(
+                        run, stage.step_key, StageStatus.FAILED,
+                        agent_id=stage.agent_id,
                     )
                     await self._approvals.request(
                         scope=run.scope,
@@ -211,6 +240,9 @@ class PipelineService:
                     agent_id=agent.id,
                     task_id=task_id,
                 )
+                await self._emit_stage_event(
+                    run, stage.step_key, StageStatus.RUNNING, agent_id=agent.id
+                )
                 # Merge-gate check happens on a later advance_run call, once
                 # evidence has been recorded against task_id.
                 continue
@@ -218,10 +250,16 @@ class PipelineService:
             await self._repo.update_stage_status(
                 stage.id, StageStatus.RUNNING, agent_id=agent.id
             )
+            await self._emit_stage_event(
+                run, stage.step_key, StageStatus.RUNNING, agent_id=agent.id
+            )
 
             await self._agents.send_message(agent.id, "system", title)
             await self._wait_for_idle(agent.id)
             await self._repo.update_stage_status(stage.id, StageStatus.PASSED)
+            await self._emit_stage_event(
+                run, stage.step_key, StageStatus.PASSED, agent_id=agent.id
+            )
 
         return await self._repo.get_run(run.id)  # type: ignore[return-value]
 
