@@ -4,7 +4,7 @@
 
 > **One sentence:** a self-contained Python server that spawns, supervises, and merges AI coding agents — each in its own git worktree — with policy enforcement, evidence-gated merges, budget controls, an approval queue, and a live web dashboard.
 
-> **Status (measured, offline):** MVP complete and verified — `uv run pytest -q` is green (**371 tests pass**), `ruff` clean, `mypy` clean across 54 source files, 11 Playwright dashboard smoke tests pass.
+> **Status (measured, offline):** MVP complete and verified — `uv run pytest -q` is green (**438 tests pass**), `ruff` clean, `mypy` clean across 61 source files, 11 Playwright dashboard smoke tests pass.
 >
 > **Implemented:** agent lifecycle (spawn → turn → compact → hibernate → merge) · git worktree isolation · dirty-repo guard · inbox messaging with restart recovery · SSE event stream · MCP tool server (out-of-process) · role-manifest policy (fail-closed) · evidence-gated squash merge · approval queue · per-agent USD budget · context compaction with typed project memory · reviewer role · web dashboard (6 views, htmx, live SSE tail) · ops CLI (`fleet doctor` + `fleet backup`) · production deployment guide.
 >
@@ -274,10 +274,10 @@ Six views served at `/dashboard`:
 | View | URL | What it shows |
 |------|-----|---------------|
 | Agent roster | `/dashboard/` | All agents: status, context %, cost, last event |
-| Conversation | `/dashboard/agents/{id}` | SSE live tail of agent messages and tool calls |
-| Event timeline | `/dashboard/events` | All events, filterable by type/agent/time; JSONL export |
-| Worktree diff | `/dashboard/agents/{id}/worktree` | Branch diff summary |
-| Validation | `/dashboard/agents/{id}/validation` | Evidence record, merge readiness gate |
+| Conversation | `/dashboard/agents/{agent_id}/conversation` | SSE live tail of agent messages and tool calls |
+| Event timeline | `/dashboard/timeline` | All events, filterable by type/agent/time; JSONL export |
+| Worktree diff | `/dashboard/worktrees/{worktree_id}` | Branch diff summary |
+| Validation | `/dashboard/tasks/{task_id}/validation` | Evidence record, merge readiness gate |
 | Approval queue | `/dashboard/approvals` | Pending requests with inline approve/deny (htmx) |
 
 #### Screenshots
@@ -329,6 +329,10 @@ All endpoints require `Authorization: Bearer <FLEET_API_TOKEN>`.
 | `DELETE` | `/api/workspaces/{repo_id}/worktrees/{worktree_id}` | Remove worktree |
 | `GET` | `/api/workspaces/{repo_id}/worktrees/{worktree_id}/wip` | Get WIP diff |
 | `POST` | `/api/workspaces/{repo_id}/dirty-action` | Stash or reset dirty repo |
+| `POST` | `/api/pipelines` | Create pipeline run |
+| `POST` | `/api/pipelines/{run_id}/advance` | Advance pipeline to next step |
+| `GET` | `/api/pipelines/{run_id}` | Get pipeline run |
+| `POST` | `/api/pipelines/preview` | Preview planned pipeline steps |
 
 Errors follow RFC 7807: `{ "type": ..., "title": ..., "detail": ..., "status": ... }`.
 
