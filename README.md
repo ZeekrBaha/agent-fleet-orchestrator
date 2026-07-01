@@ -120,7 +120,7 @@ uv sync
 
 # Run the test suite (no API key required — MockBackend replays fixtures)
 uv run pytest -q -m "not live and not slow"
-# 191 passed, 13 deselected
+# 438 passed, 18 deselected
 
 # Start the server with a random token
 FLEET_API_TOKEN=dev-token uv run uvicorn fleet.main:app --reload
@@ -185,7 +185,7 @@ fleet/
 tests/
   fixtures/            # scripted git repo, JSONL mock transcripts, seeded DB
   manifests/           # test role manifests (permissive, restrictive)
-  test_*.py            # 191 tests; mirrors package layout
+  test_*.py            # 438 tests; mirrors package layout
 
 docs/
   implementation/      # requirements, architecture, design, ADRs, validation report
@@ -280,6 +280,20 @@ Six views served at `/dashboard`:
 | Validation | `/dashboard/agents/{id}/validation` | Evidence record, merge readiness gate |
 | Approval queue | `/dashboard/approvals` | Pending requests with inline approve/deny (htmx) |
 
+#### Screenshots
+
+Agent roster, mid-run on a spawned `full-sdlc` pipeline:
+
+![Agent roster](docs/screenshots/dashboard-agents.png)
+
+Event timeline, showing live pipeline stage transitions over SSE:
+
+![Event timeline](docs/screenshots/dashboard-timeline.png)
+
+Approval queue, idle state:
+
+![Approval queue](docs/screenshots/dashboard-approvals.png)
+
 ---
 
 ## 6. REST API overview
@@ -325,7 +339,7 @@ Errors follow RFC 7807: `{ "type": ..., "title": ..., "detail": ..., "status": .
 ```bash
 # Full suite (offline, no API key)
 uv run pytest -q -m "not live and not slow"
-# 191 passed, 13 deselected (slow/live)
+# 438 passed, 18 deselected (slow/live)
 
 # Dashboard smoke (Playwright — requires a browser install)
 uv run pytest tests/test_dashboard_smoke.py -m slow

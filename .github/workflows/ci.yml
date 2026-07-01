@@ -33,3 +33,6 @@ jobs:
 
       - name: Test (pytest)
         run: uv run pytest -q
+
+      - name: Dependency audit (pip-audit)
+        run: uvx pip-audit
