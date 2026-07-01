@@ -200,3 +200,20 @@ async def test_advance_run_is_idempotent_when_nothing_new_is_eligible(
     stages_second = {s.step_key: s.status for s in await repository.get_stages(run.id)}
 
     assert stages_first == stages_second
+
+
+@pytest.mark.asyncio
+async def test_advance_run_marks_run_done_when_all_stages_pass(
+    pipeline_service: Any, repository: PipelineRepository
+) -> None:
+    """Once every stage is 'passed', the run itself transitions to 'done'."""
+    run = await pipeline_service.create_run(
+        FULL_SDLC, idea="Build Done Test", scope="pipeline-test"
+    )
+    stages = {s.step_key: s for s in await repository.get_stages(run.id)}
+    for stage in stages.values():
+        await repository.update_stage_status(stage.id, StageStatus.PASSED)
+
+    updated = await pipeline_service.advance_run(run.id)
+
+    assert updated.status == RunStatus.DONE

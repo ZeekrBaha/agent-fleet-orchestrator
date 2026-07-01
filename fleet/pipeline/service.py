@@ -261,6 +261,10 @@ class PipelineService:
                 run, stage.step_key, StageStatus.PASSED, agent_id=agent.id
             )
 
+        final_stages = await self._repo.get_stages(run.id)
+        if final_stages and all(s.status == StageStatus.PASSED for s in final_stages):
+            await self._repo.update_run_status(run.id, RunStatus.DONE)
+
         return await self._repo.get_run(run.id)  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
