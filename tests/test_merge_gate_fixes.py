@@ -469,24 +469,31 @@ async def test_p1_12_same_repo_different_scopes_serialize(
     task_id_a = await evidence_svc.create_task(
         scope="scope-a", title="task a", description="desc", branch=branch_a
     )
-    await evidence_svc.record_evidence(task_id_a, "pytest", "pass", "ok")
-
     task_id_b = await evidence_svc.create_task(
         scope="scope-b", title="task b", description="desc", branch=branch_b
     )
-    await evidence_svc.record_evidence(task_id_b, "pytest", "pass", "ok")
+
+    from fleet.workspace.gitops import git_run as _git_run
 
     wt_path_a = tmp_path / "wt_scope_a"
     worktree_add(repo, wt_path_a, branch_a)
     (wt_path_a / "a.txt").write_text("a\n")
     _git(["add", "a.txt"], cwd=wt_path_a)
     _git(["commit", "-m", "a"], cwd=wt_path_a)
+    sha_a = _git_run(["git", "rev-parse", "HEAD"], cwd=wt_path_a).strip()
+    await evidence_svc.record_evidence(
+        task_id_a, "pytest", "pass", "ok", commit_sha=sha_a
+    )
 
     wt_path_b = tmp_path / "wt_scope_b"
     worktree_add(repo, wt_path_b, branch_b)
     (wt_path_b / "b.txt").write_text("b\n")
     _git(["add", "b.txt"], cwd=wt_path_b)
     _git(["commit", "-m", "b"], cwd=wt_path_b)
+    sha_b = _git_run(["git", "rev-parse", "HEAD"], cwd=wt_path_b).strip()
+    await evidence_svc.record_evidence(
+        task_id_b, "pytest", "pass", "ok", commit_sha=sha_b
+    )
     # Move repo back to main so b can be squash-merged (a may land first)
     _git(["checkout", "main"], cwd=repo)
 
@@ -591,6 +598,7 @@ async def test_p1_12_same_repo_different_scopes_serialize(
     # at least one must be blocked or the second gets a gate/merge error.
     # We assert that both didn't just silently do whatever they wanted
     # concurrently on the same repo.
+    assert not errors, f"unexpected merge errors: {errors!r} (results={results})"
     assert len(results) == 2
     # Acceptable outcomes:
     #   - One blocked (MergeInProgressError) while the other ran.

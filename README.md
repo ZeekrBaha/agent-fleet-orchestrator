@@ -4,7 +4,7 @@
 
 > **One sentence:** a self-contained Python server that spawns, supervises, and merges AI coding agents — each in its own git worktree — with policy enforcement, evidence-gated merges, budget controls, an approval queue, and a live web dashboard.
 
-> **Status (measured, offline):** MVP complete and verified — `uv run pytest -q` is green (**438 tests pass**), `ruff` clean, `mypy` clean across 61 source files, 11 Playwright dashboard smoke tests pass.
+> **Status (measured, offline):** MVP complete and verified — `uv run pytest -q` is green (**full offline suite passes**), `ruff` clean, `mypy` strict clean, Playwright dashboard smoke tests pass.
 >
 > **Implemented:** agent lifecycle (spawn → turn → compact → hibernate → merge) · git worktree isolation · dirty-repo guard · inbox messaging with restart recovery · SSE event stream · MCP tool server (out-of-process) · role-manifest policy (fail-closed) · evidence-gated squash merge · approval queue · per-agent USD budget · context compaction with typed project memory · reviewer role · web dashboard (6 views, htmx, live SSE tail) · ops CLI (`fleet doctor` + `fleet backup`) · production deployment guide.
 >
@@ -120,7 +120,7 @@ uv sync
 
 # Run the test suite (no API key required — MockBackend replays fixtures)
 uv run pytest -q -m "not live and not slow"
-# 438 passed, 18 deselected
+# all offline tests pass; slow/live deselected
 
 # Start the server with a random token
 FLEET_API_TOKEN=dev-token uv run uvicorn fleet.main:app --reload
@@ -185,7 +185,7 @@ fleet/
 tests/
   fixtures/            # scripted git repo, JSONL mock transcripts, seeded DB
   manifests/           # test role manifests (permissive, restrictive)
-  test_*.py            # 438 tests; mirrors package layout
+  test_*.py            # full offline suite; mirrors package layout
 
 docs/
   implementation/      # requirements, architecture, design, ADRs, validation report
@@ -343,7 +343,7 @@ Errors follow RFC 7807: `{ "type": ..., "title": ..., "detail": ..., "status": .
 ```bash
 # Full suite (offline, no API key)
 uv run pytest -q -m "not live and not slow"
-# 438 passed, 18 deselected (slow/live)
+# all offline tests pass; slow/live deselected
 
 # Dashboard smoke (Playwright — requires a browser install)
 uv run pytest tests/test_dashboard_smoke.py -m slow
