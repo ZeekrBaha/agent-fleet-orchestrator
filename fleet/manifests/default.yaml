@@ -46,6 +46,89 @@ roles:
       - list_agents
       - get_agent_logs
 
+  # Pipeline-consolidation roles (Task T5) — PM/UX/architect write to scratch
+  # scope only, no merge/spawn tools.
+  pm:
+    allowed_tools:
+      - send_message
+      - get_agent_logs
+      - memory_write
+      - update_progress
+      - report_issue
+
+  ux:
+    allowed_tools:
+      - send_message
+      - get_agent_logs
+      - memory_write
+      - update_progress
+      - report_issue
+
+  architect:
+    allowed_tools:
+      - send_message
+      - get_agent_logs
+      - memory_write
+      - update_progress
+      - report_issue
+
+  # Same tool set as coder — junior-dev is coder under the pipeline's naming.
+  junior-dev:
+    allowed_tools:
+      - send_message
+      - get_agent_logs
+      - worker_wip
+      - check_conflict
+      - record_validation
+      - update_progress
+      - report_issue
+      - request_approval
+      - memory_write
+
+  # Same tool set as reviewer — dev-review and QA roles share the
+  # validation/evidence tool grant; the distinction between them is
+  # enforced by EvidenceService's non-owner-reviewer rule, not by policy.
+  senior-dev:
+    allowed_tools:
+      - record_validation
+      - worker_wip
+      - check_conflict
+      - get_agent_logs
+      - send_message
+      - update_progress
+      - report_issue
+      - memory_write
+
+  junior-qa:
+    allowed_tools:
+      - record_validation
+      - worker_wip
+      - check_conflict
+      - get_agent_logs
+      - send_message
+      - update_progress
+      - report_issue
+      - memory_write
+
+  senior-qa:
+    allowed_tools:
+      - record_validation
+      - worker_wip
+      - check_conflict
+      - get_agent_logs
+      - send_message
+      - update_progress
+      - report_issue
+      - memory_write
+
+  # observer-level read access plus minimal write for the handoff note.
+  release:
+    allowed_tools:
+      - list_agents
+      - get_agent_logs
+      - update_progress
+      - memory_write
+
 secret_paths:
   - "**/.env"
   - "**/.env.*"
