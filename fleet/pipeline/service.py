@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from fleet.db import DatabaseManager
     from fleet.pipeline.models import Workflow
     from fleet.pipeline.repository import PipelineRepository
+    from fleet.review.evidence import EvidenceService
 
 _ROOT_ROLE = "orchestrator"
 _TURN_TIMEOUT_S = 3.0
@@ -53,10 +54,12 @@ class PipelineService:
         db: DatabaseManager,
         repo: PipelineRepository,
         agent_service: AgentService,
+        evidence_service: EvidenceService,
     ) -> None:
         self._db = db
         self._repo = repo
         self._agents = agent_service
+        self._evidence = evidence_service
 
     # ------------------------------------------------------------------
     # Public API
@@ -112,15 +115,36 @@ class PipelineService:
         from fleet.pipeline.workflows import load as load_workflow
 
         workflow = load_workflow(run.workflow_name)
+        tasks_by_key = {task.step_key: task for task in workflow.tasks}
         deps_by_step: dict[str, list[str]] = {
             task.step_key: [] for task in workflow.tasks
         }
         for parent, child in workflow.edges:
             deps_by_step[child].append(parent)
 
-        # Re-fetch stages after each spawn so a stage completed earlier in
-        # this same pass is visible to later eligibility checks (fan-out
-        # then fan-in within one call, per architecture.md).
+        # Pass 1: check the merge gate for any worktree stage already
+        # 'running' with an evidence task attached -- mark it 'passed' if
+        # the gate is open. Runs before the spawn pass so a stage this
+        # unblocks (e.g. impl -> review) is visible within the same call.
+        for stage in await self._repo.get_stages(run.id):
+            task_spec = tasks_by_key[stage.step_key]
+            if (
+                task_spec.workspace == "worktree"
+                and stage.status == StageStatus.RUNNING
+                and stage.task_id is not None
+            ):
+                can_merge, _reason = await self._evidence.check_merge_gate(
+                    stage.task_id
+                )
+                if can_merge:
+                    await self._repo.update_stage_status(
+                        stage.id, StageStatus.PASSED
+                    )
+
+        # Pass 2: spawn every currently-eligible pending stage. Re-fetch
+        # stages after each spawn so a stage completed earlier in this same
+        # pass is visible to later eligibility checks (fan-out then fan-in
+        # within one call, per architecture.md).
         for task_spec in workflow.tasks:
             stages_by_key = {
                 s.step_key: s for s in await self._repo.get_stages(run.id)
@@ -145,13 +169,27 @@ class PipelineService:
                 parent_id=run.root_agent_id,
                 task_description=title,
             )
+            if task_spec.workspace == "worktree":
+                task_id = await self._evidence.create_task(
+                    scope=run.scope,
+                    title=title,
+                    description=title,
+                    owner_agent_id=agent.id,
+                    branch=task_spec.branch,
+                )
+                await self._repo.update_stage_status(
+                    stage.id,
+                    StageStatus.RUNNING,
+                    agent_id=agent.id,
+                    task_id=task_id,
+                )
+                # Merge-gate check happens on a later advance_run call, once
+                # evidence has been recorded against task_id.
+                continue
+
             await self._repo.update_stage_status(
                 stage.id, StageStatus.RUNNING, agent_id=agent.id
             )
-
-            if task_spec.workspace == "worktree":
-                # Merge-gate check is wired in a later task; leave running.
-                continue
 
             await self._agents.send_message(agent.id, "system", title)
             await self._wait_for_idle(agent.id)

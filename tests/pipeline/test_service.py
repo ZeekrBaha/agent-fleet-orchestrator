@@ -19,6 +19,7 @@ from fleet.events.sse import SSEHub
 from fleet.pipeline.models import RunStatus, StageStatus
 from fleet.pipeline.repository import PipelineRepository
 from fleet.pipeline.workflows import FULL_SDLC
+from fleet.review.evidence import EvidenceService
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -65,14 +66,25 @@ async def repository(db: DatabaseManager) -> PipelineRepository:
 
 
 @pytest_asyncio.fixture
+async def evidence_service(db: DatabaseManager) -> EvidenceService:
+    return EvidenceService(db, gate_require_reviewer=False)
+
+
+@pytest_asyncio.fixture
 async def pipeline_service(
     db: DatabaseManager,
     repository: PipelineRepository,
     agent_service: AgentService,
+    evidence_service: EvidenceService,
 ) -> Any:
     from fleet.pipeline.service import PipelineService
 
-    return PipelineService(db=db, repo=repository, agent_service=agent_service)
+    return PipelineService(
+        db=db,
+        repo=repository,
+        agent_service=agent_service,
+        evidence_service=evidence_service,
+    )
 
 
 # ---------------------------------------------------------------------------
