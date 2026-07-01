@@ -25,6 +25,7 @@ from fleet.util.time import utcnow_iso
 
 if TYPE_CHECKING:
     from fleet.agents.service import AgentService
+    from fleet.approvals.service import ApprovalService
     from fleet.db import DatabaseManager
     from fleet.pipeline.models import Workflow
     from fleet.pipeline.repository import PipelineRepository
@@ -32,6 +33,7 @@ if TYPE_CHECKING:
 
 _ROOT_ROLE = "orchestrator"
 _TURN_TIMEOUT_S = 3.0
+_NOT_READY_REASON = "No validation evidence recorded; run checks before merging"
 
 
 def _single_turn_backend() -> MockBackend:
@@ -55,11 +57,13 @@ class PipelineService:
         repo: PipelineRepository,
         agent_service: AgentService,
         evidence_service: EvidenceService,
+        approval_service: ApprovalService,
     ) -> None:
         self._db = db
         self._repo = repo
         self._agents = agent_service
         self._evidence = evidence_service
+        self._approvals = approval_service
 
     # ------------------------------------------------------------------
     # Public API
@@ -112,6 +116,11 @@ class PipelineService:
         if run is None:
             raise ValueError(f"No pipeline run with id {run_id!r}")
 
+        if run.status == RunStatus.BLOCKED:
+            # A prior call already routed a failure to the approval queue;
+            # the DAG halts until a human resolves it. No-op.
+            return run
+
         from fleet.pipeline.workflows import load as load_workflow
 
         workflow = load_workflow(run.workflow_name)
@@ -133,13 +142,32 @@ class PipelineService:
                 and stage.status == StageStatus.RUNNING
                 and stage.task_id is not None
             ):
-                can_merge, _reason = await self._evidence.check_merge_gate(
+                can_merge, reason = await self._evidence.check_merge_gate(
                     stage.task_id
                 )
                 if can_merge:
                     await self._repo.update_stage_status(
                         stage.id, StageStatus.PASSED
                     )
+                elif reason != _NOT_READY_REASON:
+                    # A real failure (failing check, stale evidence, missing
+                    # reviewer verdict) -- not just "no evidence yet". Halt
+                    # the DAG and route to the approval queue.
+                    await self._repo.update_stage_status(
+                        stage.id, StageStatus.FAILED
+                    )
+                    await self._approvals.request(
+                        scope=run.scope,
+                        agent_id=stage.agent_id or run.root_agent_id,
+                        action=f"pipeline-stage-failed:{stage.step_key}",
+                        description=(
+                            f"Pipeline run {run.id} stage {stage.step_key!r}"
+                            f" failed its merge gate: {reason}"
+                        ),
+                        metadata={"run_id": run.id, "step_key": stage.step_key},
+                    )
+                    await self._repo.update_run_status(run.id, RunStatus.BLOCKED)
+                    return await self._repo.get_run(run.id)  # type: ignore[return-value]
 
         # Pass 2: spawn every currently-eligible pending stage. Re-fetch
         # stages after each spawn so a stage completed earlier in this same

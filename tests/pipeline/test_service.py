@@ -13,6 +13,7 @@ import pytest_asyncio
 
 from fleet.agents.inbox import InboxService
 from fleet.agents.service import AgentService
+from fleet.approvals.service import ApprovalService
 from fleet.db import DatabaseManager, init_db
 from fleet.events.service import EventService, create_event_service
 from fleet.events.sse import SSEHub
@@ -71,11 +72,19 @@ async def evidence_service(db: DatabaseManager) -> EvidenceService:
 
 
 @pytest_asyncio.fixture
+async def approval_service(
+    db: DatabaseManager, event_service: EventService
+) -> ApprovalService:
+    return ApprovalService(db, event_service)
+
+
+@pytest_asyncio.fixture
 async def pipeline_service(
     db: DatabaseManager,
     repository: PipelineRepository,
     agent_service: AgentService,
     evidence_service: EvidenceService,
+    approval_service: ApprovalService,
 ) -> Any:
     from fleet.pipeline.service import PipelineService
 
@@ -84,6 +93,7 @@ async def pipeline_service(
         repo=repository,
         agent_service=agent_service,
         evidence_service=evidence_service,
+        approval_service=approval_service,
     )
 
 
