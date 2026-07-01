@@ -70,3 +70,35 @@ Secondary: the fix commit added 2 new C4 guard tests, so the suite is now **440*
 
 Commands run this session: `git status`/`log`/`rev-parse` (clean, pushed), `uv run pytest -q` (440 green local), `ruff` (clean), `mypy` (clean), `uvx pip-audit` (clean), README §5/§6/banner re-reads against `fleet/dashboard/router.py` and `fleet/api/pipelines.py`, `gh run list` + `gh run view --log-failed` on the 3 recorded CI runs (all fail on p1_12).
 Not run: live/slow suites (API-key/long-running), Playwright smoke (browser-gated), Linux-container repro of p1_12 (recommended next step; not executed — review-only pass).
+
+---
+
+## Remediation Addendum (2026-07-01, commit `1bc74c3`)
+
+Both findings fixed and verified the same evening; **verdict upgraded to SHIP**.
+
+**[High] p1_12 CI failure — root-caused and fixed.** Not a Linux timing/git
+difference and not a merge-lock bug. An instrumented local reproduction
+(parameterized over b-start delays 0/0.01/0.5/2.0s) showed both merges *always*
+failed the evidence-staleness gate — `MergeGateError: evidence is stale:
+recorded at SHA(s) None` — because the test recorded evidence before any
+commits existed. The test passed locally only by accident: merge A still held
+the repo lock while failing its own gate when B arrived 10ms later, so B raised
+`MergeInProgressError` and satisfied `any("blocked" in r ...)`. On the slower
+ubuntu runner, A errored and released the lock before B woke → `[a-error,
+b-error]` → `assert False`. Deterministic, which matches 3/3 identical CI
+failures. Fix: record evidence after each worktree commit with its real SHA
+(the same pattern the other merge-gate tests already use) and add
+`assert not errors` so any future failure is diagnosable instead of a bare
+`assert False`. Post-fix ordering matrix: concurrent → one merge blocked by the
+repo-keyed lock; sequential → both merge cleanly; zero errors. The
+serialization invariant is now genuinely exercised — previously the test never
+saw a successful merge at all.
+
+**[Low] README count drift — structurally fixed.** All four hardcoded "438"
+sites replaced with count-free wording ("full offline suite passes"), so adding
+tests can no longer re-stale the banner.
+
+**CI verification:** run 28555679334 on `1bc74c3` → **success** (48s) — the
+first green CI run in this repository's history. Local gate at the same
+commit: 440 passed / ruff clean / mypy strict clean.
