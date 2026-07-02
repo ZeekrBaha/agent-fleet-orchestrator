@@ -37,6 +37,8 @@ jobs:
       - name: Type-check (mypy)
         run: uv run mypy fleet/
 
+      # Ratchet: raise the floor when coverage grows (was 79.8% at gate
+      # introduction) so the gate never goes decorative. Never lower it.
       - name: Test (pytest, coverage gate)
         run: uv run pytest -q --cov=fleet --cov-report=term --cov-fail-under=78
 

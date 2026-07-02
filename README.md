@@ -408,6 +408,8 @@ Required env vars: `FLEET_API_TOKEN`, `FLEET_DB_PATH`, `FLEET_HOST`, `FLEET_PORT
 
 Security: bind to `127.0.0.1`, put nginx in front, set `FLEET_API_TOKEN` to at least 32 random bytes. The tool server process inherits the token from the environment — rotate both together.
 
+The dashboard accepts the token as a `?token=` query parameter for browser convenience. Query-param tokens can leak via access logs, browser history, and `Referer` headers — fine for a localhost ops dashboard, but if you ever bind beyond `127.0.0.1`, front it with header-based auth (nginx `auth_request` or basic auth) or a session cookie instead of relying on `?token=`.
+
 Backup and restore: [`docs/ops/restore.md`](docs/ops/restore.md).
 
 ---
