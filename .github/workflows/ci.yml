@@ -8,9 +8,15 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for gitleaks commit scanning
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,8 +37,14 @@ jobs:
       - name: Type-check (mypy)
         run: uv run mypy fleet/
 
-      - name: Test (pytest)
-        run: uv run pytest -q
+      - name: Test (pytest, coverage gate)
+        run: uv run pytest -q --cov=fleet --cov-report=term --cov-fail-under=78
 
       - name: Dependency audit (pip-audit)
         run: uvx pip-audit
+
+      - name: Secret scan (gitleaks)
+        if: matrix.os == 'ubuntu-latest'
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

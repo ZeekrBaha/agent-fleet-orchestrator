@@ -26,6 +26,7 @@ dev = [
     "anyio[trio]>=4.4",
     "types-pyyaml>=6.0.12.20260518",
     "pytest-playwright>=0.8.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.ruff.lint]
